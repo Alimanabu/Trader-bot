@@ -217,12 +217,13 @@ class Engine:
         if a.drawdown(price) >= self.s.agent_max_drawdown:
             self.head.drop_intern(a, price, ts, f"просадка {a.drawdown(price)*100:.1f}%")
             return
+        exp_before = a.account.exposure(price)
         t = a.account.rebalance(sig.target_exposure, price, ts, sig.reason)
         if t:
             self.j.trade(t)
         eq = a.equity(price)
         self.j.decision(ts, a.name, a.strategy.family, sig.action.value, sig.target_exposure, sig.confidence,
-                        sig.reason, price, eq, True, None)
+                        sig.reason, price, eq, True, None, trade=t, exposure_before=exp_before)
         self.j.equity(ts, a.name, eq, price)
         a.observe(price)
         a.after_trade_tick(price)
@@ -239,6 +240,8 @@ class Engine:
         verdict = self.risk.check_agent(a, sig, price)
         executed = False
         blocked = None
+        trade = None
+        exp_before = a.account.exposure(price)
         if verdict.fire:
             self.head.fire(a, price, ts, verdict.reason)
             blocked = verdict.reason
@@ -250,15 +253,15 @@ class Engine:
             self.j.event("pause", f"{a.name}: {verdict.reason}", a.name, ts=ts)
             blocked = verdict.reason
         elif verdict.allowed:
-            t = a.account.rebalance(verdict.target_exposure, price, ts, sig.reason)
-            if t:
-                self.j.trade(t)
+            trade = a.account.rebalance(verdict.target_exposure, price, ts, sig.reason)
+            if trade:
+                self.j.trade(trade)
             executed = True
         else:
             blocked = verdict.reason
         eq = a.equity(price)
         self.j.decision(ts, a.name, a.strategy.family, sig.action.value, sig.target_exposure, sig.confidence,
-                        sig.reason, price, eq, executed, blocked)
+                        sig.reason, price, eq, executed, blocked, trade=trade, exposure_before=exp_before)
         if a.status != "fired":
             self.j.equity(ts, a.name, eq, price)
         a.observe(price)

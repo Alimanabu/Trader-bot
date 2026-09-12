@@ -81,6 +81,10 @@ class Journal:
         for col, ddl in (("last_decided_ts", "INTEGER NOT NULL DEFAULT 0"), ("slot_minute", "INTEGER NOT NULL DEFAULT 0")):
             if col not in cols:
                 self._conn.execute(f"ALTER TABLE agents ADD COLUMN {col} {ddl}")
+        dcols = {r[1] for r in self._conn.execute("PRAGMA table_info(decisions)").fetchall()}
+        for col, ddl in (("trade_side", "TEXT"), ("trade_qty", "REAL"), ("trade_price", "REAL"), ("exposure_before", "REAL")):
+            if col not in dcols:
+                self._conn.execute(f"ALTER TABLE decisions ADD COLUMN {col} {ddl}")
         self._conn.commit()
 
     # --- служебное ---
@@ -103,11 +107,13 @@ class Journal:
                    (key, json.dumps(value)))
 
     # --- записи ---
-    def decision(self, ts, agent, strategy, action, target, confidence, reason, price, equity, executed, blocked_by=None) -> int:
+    def decision(self, ts, agent, strategy, action, target, confidence, reason, price, equity, executed, blocked_by=None,
+                 trade=None, exposure_before=None) -> int:
         cur = self._exec(
-            "INSERT INTO decisions(ts,agent,strategy,action,target_exposure,confidence,reason,price,equity_before,executed,blocked_by)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (ts, agent, strategy, action, target, confidence, reason, price, equity, int(executed), blocked_by))
+            "INSERT INTO decisions(ts,agent,strategy,action,target_exposure,confidence,reason,price,equity_before,executed,blocked_by,"
+            "trade_side,trade_qty,trade_price,exposure_before) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (ts, agent, strategy, action, target, confidence, reason, price, equity, int(executed), blocked_by,
+             trade.side if trade else None, trade.qty if trade else None, trade.price if trade else None, exposure_before))
         return cur.lastrowid
 
     def trade(self, t) -> None:

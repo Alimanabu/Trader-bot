@@ -9,6 +9,13 @@
   const date = (ts) => new Date(ts * 1000).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const STATUS = { active: "работает", paused: "пауза", fired: "уволен", intern: "стажёр", dropped: "отчислен" };
+  const ACTION = { BUY: "войти в BTC", SELL: "выйти в USDT", HOLD: "держать" };
+  function tradeCell(x) {
+    if (x.trade_side) return `<span class="${x.trade_side === "BUY" ? "up" : "down"}">${x.trade_side === "BUY" ? "купил" : "продал"} ${fmt(x.trade_qty, 5)} BTC</span>`;
+    if (!x.executed) return `<span class="warn">${esc(x.blocked_by || "заблокировано")}</span>`;
+    const was = x.exposure_before == null ? null : Math.round(x.exposure_before * 100);
+    return `<span class="dim">без сделки${was != null ? `, уже ${was}% в BTC` : ""}</span>`;
+  }
   const KIND = { fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
 
   const TABS = ["home", "team", "interns", "lab", "reports"];
@@ -135,7 +142,7 @@
           <div><span>Следующее</span><b class="num">${hhmm(a.next_decision_ts)}${nextIn != null ? ` <span class="muted">(через ${nextIn} мин)</span>` : ""}</b></div>
         </div>
         <div class="bar"><i style="width:${Math.round(a.exposure * 100)}%"></i></div>
-        <div class="last"><span class="tag">${a.last_action || "—"}</span> ${esc(a.last_reason || "решений ещё не было")}</div>
+        <div class="last"><span class="tag">${ACTION[a.last_action] || "—"}</span> ${esc(a.last_reason || "решений ещё не было")}</div>
         <div style="margin-top:8px"><button class="btn open-agent" data-name="${nameShort}">Открыть карточку и журнал</button></div>
       </div>
     </details>`;
@@ -183,7 +190,7 @@
       </div>
       <div class="note" style="margin-top:10px">Стажёры торгуют в тени на своих демосчетах по 1000 $, каждый в свою минуту часа. Первые часы у большинства нули: стратегия ждёт своего сигнала, а сделка стоит комиссию, поэтому без сигнала они сидят в долларах. Через 14 дней лучший предлагается на замену худшему в команде, при просадке 10% стажёр отчисляется.</div></div>
       <div class="card list"><h3>Рейтинг · нажмите на строку</h3><div class="acc-head"><span>Стажёр</span><span>Минута</span><span>За 24 ч</span><span>За всё время</span><span></span></div>${s.interns.map((a) => agentRow(a)).join("")}</div>
-      <div class="card"><h3>Что они делают прямо сейчас · последние решения</h3>${feed.length ? `<ul class="feed">${feed.map((d) => `<li><time>${hhmm(d.ts)}</time><b>${esc(d.agent)}</b><span class="tag ${d.action === "BUY" ? "buy" : d.action === "SELL" ? "sell" : ""}">${d.action} ${fmt(d.target_exposure * 100, 0)}%</span><span class="muted">${esc(d.reason)}</span></li>`).join("")}</ul>` : '<div class="note">Первые решения появятся в ближайший час, у каждого стажёра в свою минуту.</div>'}</div>`;
+      <div class="card"><h3>Что они делают прямо сейчас · последние решения</h3>${feed.length ? `<ul class="feed">${feed.map((d) => `<li><time>${hhmm(d.ts)}</time><b>${esc(d.agent)}</b><span class="tag ${d.action === "BUY" ? "buy" : d.action === "SELL" ? "sell" : ""}">${ACTION[d.action] || d.action}${d.trade_side ? (d.trade_side === "BUY" ? " · купил" : " · продал") : ""}</span><span class="muted">${esc(d.reason)}</span></li>`).join("")}</ul>` : '<div class="note">Первые решения появятся в ближайший час, у каждого стажёра в свою минуту.</div>'}</div>`;
   }
 
   // ---------- наука ----------
@@ -302,8 +309,9 @@
       </div>
       ${d.lessons.length ? `<h3 style="margin:14px 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase">Уроки из журнала</h3><ul style="padding-left:18px;font-size:13px">${d.lessons.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}
       <h3 style="margin:14px 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase">Последние решения</h3>
-      <div class="tbl"><table><tr><th>Время</th><th>Решение</th><th class="r">Доля</th><th class="r">Цена</th><th class="r">Через 4ч</th><th>Обоснование</th></tr>
-      ${d.decisions.map((x) => `<tr><td class="num">${time(x.ts)}</td><td>${x.action}${x.executed ? "" : ` <span class="tag">${esc(x.blocked_by || "не исполнено")}</span>`}</td><td class="r num">${fmt(x.target_exposure * 100, 0)}%</td><td class="r num">${fmt(x.price, 0)}</td><td class="r num ${cls(x.outcome_pct)}">${x.outcome_pct == null ? "—" : sign(x.outcome_pct) + "%"}</td><td class="note">${esc(x.reason)}</td></tr>`).join("")}</table></div>
+      <div class="note" style="margin-bottom:6px">«Цель» это какую долю капитала агент хочет держать в BTC после этого часа. Сделка происходит только если цель отличается от текущего состояния. «Цена через 4 ч» показывает, куда ушла цена после решения, заполняется с задержкой.</div>
+      <div class="tbl"><table><tr><th>Время</th><th>Цель</th><th>Сделка</th><th class="r">Цена BTC</th><th class="r">Цена через 4 ч</th><th>Обоснование</th></tr>
+      ${d.decisions.map((x) => `<tr><td class="num">${time(x.ts)}</td><td>${ACTION[x.action] || x.action}<div class="dim">${fmt(x.target_exposure * 100, 0)}% в BTC</div></td><td>${tradeCell(x)}</td><td class="r num">${fmt(x.price, 0)}</td><td class="r num ${cls(x.outcome_pct)}">${x.outcome_pct == null ? "—" : sign(x.outcome_pct) + "%"}</td><td class="note">${esc(x.reason)}</td></tr>`).join("")}</table></div>
       ${a.status !== "fired" && a.status !== "dropped" ? `<p><button class="btn danger" id="modal-fire">${a.status === "intern" ? "Отчислить стажёра" : "Уволить агента"}</button></p>` : ""}`;
     $("#modal").classList.add("open");
     $("#modal-close").onclick = () => $("#modal").classList.remove("open");

@@ -150,3 +150,5 @@ details.acc[open] .acc-arrow { transform: rotate(90deg); }
 
 .state { font-size: 11px; color: var(--muted); }
 .state.inpos { color: var(--btc); } .state.wait { color: var(--dim); } .state.paused { color: var(--warn); } .state.fired, .state.dropped { color: var(--down); }
+
+.warn { color: var(--warn); }
