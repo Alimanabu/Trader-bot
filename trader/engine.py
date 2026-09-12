@@ -71,15 +71,18 @@ class Engine:
                                slippage_rate=self.s.slippage_rate)
             acc.realized_pnl = r["realized_pnl"]
             acc._avg_entry = r["avg_entry"]
+            # сделки только текущего «срока»: после перевода в команду или в стажёры счёт начинается заново
             acc.trades = [Trade(t["ts"], t["agent"], t["side"], t["price"], t["qty"], t["fee"], t["reason"] or "",
                                 pnl=t.get("pnl"), cost=t.get("cost"))
-                          for t in self.j.trades_for(r["name"])]
+                          for t in self.j.trades_for(r["name"]) if t["ts"] >= int(r["hired_at"] or 0)]
             a = Agent(name=r["name"], strategy=strat, account=acc, status=r["status"], hired_at=r["hired_at"],
                       peak_equity=r["peak_equity"], day_start_equity=r["day_start_equity"], day_key=r["day_key"],
                       notes=json.loads(r["notes"] or "[]"), last_decided_ts=int(r.get("last_decided_ts") or 0),
                       slot_minute=int(r.get("slot_minute") or 0), next_check_ts=int(r.get("next_check_ts") or 0),
                       alert_above=float(r.get("alert_above") or 0), alert_below=float(r.get("alert_below") or 0),
-                      stop_price=float(r.get("stop_price") or 0))
+                      stop_price=float(r.get("stop_price") or 0), week_start_equity=float(r.get("week_start_equity") or 0),
+                      week_key=r.get("week_key") or "", streak_weeks=int(r.get("streak_weeks") or 0),
+                      trial_weeks=int(r.get("trial_weeks") or 0), live_ready=bool(r.get("live_ready") or 0))
             a._start_balance = r["start_balance"]
             a.last_price = self.last_price
             self.agents.append(a)
@@ -217,12 +220,21 @@ class Engine:
         summary = {"ok": True, "ts": last.ts, "price": price, "new_candle": new_candle, "decisions": [], "fired": [], "hired": []}
 
         alive = [a for a in self.agents if a.status not in {"fired", "dropped"}]
+        wk = self.head.week_key(now_i)
+        new_week = self.j.kv_get("week_key") != wk
         for a in alive:
             a.last_ts_seen = now_i
             if a.hired_at > now_i:
                 a.hired_at = now_i
             a.roll_day(dk, price)
             a.observe(price)
+        if new_week:
+            if self.j.kv_get("week_key"):        # не при самом первом запуске
+                summary["weekly"] = self.head.weekly_review(self.agents, price, now_i)
+            self.j.kv_set("week_key", wk)
+            for a in self.agents:
+                if a.status not in {"fired", "dropped"}:
+                    a.roll_week(wk, price)
 
         ok, why = self.risk.check_department([a for a in self.agents if is_team(a)], price, dk)
         if not ok:
@@ -267,6 +279,7 @@ class Engine:
         for h in hired + new_interns:
             h.last_ts_seen = now_i
             h.roll_day(dk, price)
+            h.roll_week(wk, price)
             h.observe(price)
             self.j.equity(now_i, h.name, h.equity(price), price)
         self.agents.extend([h for h in hired if h not in self.agents])
@@ -459,6 +472,8 @@ class Engine:
                     a = self.head._create(cand["strategy"], cand["params"], self.agents, ts, "active")
                     self.j.event("hire", f"Нанят {a.name}", a.name, ts=ts)
                     self.agents.append(a)
+        elif r["kind"] == "live":
+            self.j.event("approval", f"Одобрен перевод на реальный счёт: {r['details'].get('agent')} (модуль реальной торговли ещё не подключён)")
         elif r["kind"] == "promote":
             worst = next((a for a in self.agents if a.name == r["details"].get("agent") and is_team(a)), None)
             intern = next((a for a in self.agents if a.name == r["details"].get("intern") and is_intern(a)), None)

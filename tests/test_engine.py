@@ -121,26 +121,33 @@ def test_interns_shadow_and_new_default_agent_backfilled(settings):
     assert len([a for a in eng2.agents if a.status == "intern"]) == 5
 
 
-def test_promotion_approval(settings):
+def test_weekly_rotation(settings):
     settings.intern_count = 3
     eng, market = make_engine(settings)
-    hours(eng, market, 3)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)                       # первая неделя зафиксирована
     price = eng.last_price
     team = [a for a in eng.agents if a.status == "active"]
-    worst = team[0]
-    worst.hired_at -= 20 * 86400
-    worst.account.cash -= 50   # в минусе
+    worst, streaky = team[0], team[1]
+    worst.account.cash -= 50              # минус за неделю
+    streaky.account.cash += 20            # плюс за неделю, уже 2 недели в серии
+    streaky.streak_weeks = 2
     intern = next(a for a in eng.agents if a.status == "intern")
-    intern.hired_at -= 20 * 86400
-    intern.account.cash += 30
-    eng.j.kv_set("review_day", "")
-    eng.head.review(eng.agents, price, eng.last_tick_ts)
-    pend = [p for p in eng.j.pending_approvals() if p["kind"] == "promote"]
-    assert pend and pend[0]["details"]["agent"] == worst.name and pend[0]["details"]["intern"] == intern.name
-    eng.apply_approval(pend[0]["id"], True)
-    assert worst.status == "fired"
-    assert intern.status == "active"
-    assert abs(intern.equity(price) - settings.agent_start_balance) < 1e-6
+    intern.account.cash += 30             # лучший котёнок недели
+    loser_intern = [a for a in eng.agents if a.status == "intern" and a is not intern][0]
+    loser_intern.account.cash -= 10
+    loser_intern.streak_weeks = -1        # уже одна неделя в минусе
+    res = eng.tick(now=T + 7 * 86400)
+    w = res["weekly"]
+    assert worst.name in w["demoted"] and worst.status == "intern" and worst.trial_weeks == 1
+    assert intern.name in w["promoted"] and intern.status == "active" and abs(intern.equity(eng.last_price) - settings.agent_start_balance) < 1e-6
+    assert streaky.name in w["live_ready"] and streaky.live_ready and streaky.streak_weeks == 3
+    assert loser_intern.name in w["dropped"] and loser_intern.status == "dropped"
+    assert any(p["kind"] == "live" and p["details"]["agent"] == streaky.name for p in eng.j.pending_approvals())
+    assert len([a for a in eng.agents if a.status in {"active", "paused"}]) == settings.team_size
+    kinds = {e["kind"] for e in eng.j.recent_events(100)}
+    assert {"weekly", "demote", "live_ready", "drop"} <= kinds
 
 
 def test_agents_check_market_at_their_own_cadence(settings):

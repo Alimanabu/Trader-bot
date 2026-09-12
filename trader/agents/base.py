@@ -68,6 +68,11 @@ class Agent:
     last_logged_ts: int = 0
     last_target: float = -1.0
     stop_price: float = 0.0      # стоп-лосс текущей позиции (0 = нет позиции)
+    week_start_equity: float = 0.0
+    week_key: str = ""
+    streak_weeks: int = 0        # подряд недель в плюсе в основной команде
+    trial_weeks: int = 0         # недель на испытательном сроке (1 = только что переведён)
+    live_ready: bool = False     # три недели подряд в плюсе: кандидат на реальный счёт
 
     def start_balance(self) -> float:
         return self._start_balance
@@ -96,6 +101,18 @@ class Agent:
 
     def pnl_total(self, price: float | None = None) -> float:
         return self.equity(price) - self._start_balance
+
+    def roll_week(self, week_key: str, price: float) -> bool:
+        if week_key != self.week_key:
+            self.week_key = week_key
+            self.week_start_equity = self.equity(price)
+            return True
+        return False
+
+    def pnl_week_pct(self, price: float) -> float:
+        if self.week_start_equity <= 0:
+            return 0.0
+        return (self.equity(price) - self.week_start_equity) / self.week_start_equity * 100
 
     def roll_day(self, day_key: str, price: float) -> bool:
         """Начало нового торгового дня. Возвращает True, если день сменился."""
@@ -126,6 +143,8 @@ class Agent:
         self.day_start_equity = cash
         self.hired_at = ts
         self.bars_in_position = 0
+        self.stop_price = 0.0
+        self.week_start_equity = cash
 
     def snapshot(self, price: float | None = None) -> AgentSnapshot:
         p = price if price is not None else self.last_price
@@ -155,6 +174,10 @@ class Agent:
             alert_above=self.alert_above,
             alert_below=self.alert_below,
             stop_price=self.stop_price,
+            pnl_week=round(self.equity(p) - self.week_start_equity, 2) if self.week_start_equity else 0.0,
+            streak_weeks=self.streak_weeks,
+            trial_weeks=self.trial_weeks,
+            live_ready=self.live_ready,
         )
 
 

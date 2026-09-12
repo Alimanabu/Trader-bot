@@ -16,7 +16,7 @@
     const was = x.exposure_before == null ? null : Math.round(x.exposure_before * 100);
     return `<span class="dim">без сделки${was != null ? `, уже ${was}% в BTC` : ""}</span>`;
   }
-  const KIND = { fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", stop: "стоп-лосс", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
+  const KIND = { fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", stop: "стоп-лосс", demote: "в стажёры", weekly: "ротация", live_ready: "к реальным торгам", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
 
   const TABS = ["home", "team", "interns", "lab", "reports"];
   let state = null, tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "home", equityData = null, summary = null, families = null, range = "all";
@@ -139,6 +139,7 @@
     return `<details class="acc ${a.status}" data-name="${nameShort}">
       <summary>
         <div class="acc-name">${catSVG(a.name, isIntern ? "intern" : "team", 36)}<div><b>${nameShort}</b><span class="state ${a.status !== "active" && a.status !== "intern" ? a.status : a.exposure > 0 ? "inpos" : "wait"}">${a.status === "paused" ? "пауза" : a.status === "fired" ? "уволен" : a.status === "dropped" ? "отчислен" : a.exposure > 0 ? `в BTC ${fmt(a.exposure * 100, 0)}%` : a.decided_at ? "ждёт сигнала" : "ещё не решал"}</span></div></div>
+        <div class="acc-badges">${a.live_ready ? '<span class="pill gold">готов к реальным</span>' : ""}${a.trial_weeks ? `<span class="pill">испытание · ${a.trial_weeks}-я нед.</span>` : ""}${!isIntern && a.streak_weeks > 0 ? `<span class="pill green">серия ${a.streak_weeks} нед.</span>` : ""}</div>
         <div class="acc-time num" title="Как часто агент смотрит на рынок">${a.strategy.startsWith("llm_") ? "сам" : a.cadence_minutes >= 60 ? "1 ч" : a.cadence_minutes + " м"}</div>
         <div class="acc-pnl num ${cls(a.pnl_24h)}">${sign(a.pnl_24h)} $<small>24 ч</small></div>
         <div class="acc-pnl num ${cls(a.pnl_total)}">${sign(a.pnl_total)} $<small>всего</small></div>
@@ -153,6 +154,8 @@
           <div><span>Просадка</span><b class="num">${fmt(a.drawdown * 100, 1)}%</b></div>
           <div><span>Сделок · побед</span><b class="num">${a.trades} · ${fmt(a.win_rate * 100, 0)}%</b></div>
           <div><span>${isIntern ? "На стажировке" : "В команде"}</span><b class="num">${a.days} дн.</b></div>
+          <div><span>За эту неделю</span><b class="num ${cls(a.pnl_week)}">${sign(a.pnl_week)} $</b></div>
+          <div><span>Недель в плюсе подряд</span><b class="num">${isIntern ? "—" : a.streak_weeks}</b></div>
           <div><span>Смотрит на рынок</span><b class="num">${a.strategy.startsWith("llm_") ? "сам решает когда" : a.cadence_minutes >= 60 ? "раз в час" : `каждые ${a.cadence_minutes} мин`}</b></div>
           <div><span>Последняя проверка</span><b class="num">${hhmm(a.decided_at)}</b></div>
           <div><span>Следующая</span><b class="num">${hhmm(a.next_decision_ts)}${nextIn != null ? ` <span class="muted">(через ${nextIn} мин)</span>` : ""}</b></div>
@@ -184,7 +187,7 @@
     const fired = s.agents.filter((a) => a.status === "fired");
     const sorted = [...alive].sort((a, b) => b.pnl_total - a.pnl_total);
     return `<h2 class="sec">Коты · основная команда · ${alive.length} из ${s.team_size}</h2>
-      <div class="note" style="margin-bottom:8px">Каждый кот торгует своими 1000 $ по своей теории и сам решает, как часто смотреть на рынок: колонка «Ритм». ${(s.risk_per_trade || 1) < 1 ? `Размер позиции считается от риска: на одной сделке кот может потерять не больше ${fmt(s.risk_per_trade * 100, 0)}% капитала до стоп-лосса.` : "Размер позиции задаёт сама стратегия, потолок " + fmt((s.max_exposure || 1) * 100, 0) + "% капитала."} У каждой позиции есть стоп-лосс, он проверяется каждую минуту.</div>
+      <div class="note" style="margin-bottom:8px">Каждый кот торгует своими 1000 $ по своей теории и сам решает, как часто смотреть на рынок: колонка «Ритм». По понедельникам ротация: минус за неделю отправляет в котята, три недели в плюсе подряд дают статус «готов к реальным». ${(s.risk_per_trade || 1) < 1 ? `Размер позиции считается от риска: на одной сделке кот может потерять не больше ${fmt(s.risk_per_trade * 100, 0)}% капитала до стоп-лосса.` : "Размер позиции задаёт сама стратегия, потолок " + fmt((s.max_exposure || 1) * 100, 0) + "% капитала."} У каждой позиции есть стоп-лосс, он проверяется каждую минуту.</div>
       <div class="card list"><div class="acc-head"><span>Агент</span><span>Ритм</span><span>За 24 ч</span><span>За всё время</span><span></span></div>${sorted.map((a) => agentRow(a)).join("")}</div>
       ${fired.length ? `<h2 class="sec">Уволенные · ${fired.length}</h2><div class="card list">${fired.map((a) => agentRow(a)).join("")}</div>` : ""}`;
   }
@@ -206,7 +209,7 @@
         <div><div class="k">Лучший</div><div class="v num ${cls(best?.pnl_total)}">${best ? sign(best.pnl_total) + " $" : "—"}</div><div class="note">${best ? esc(best.name) : ""}</div></div>
         <div><div class="k">Следующий решает</div><div class="v" style="font-size:14px">${nextUp ? `${esc(nextUp.name)} в ${hhmm(nextUp.next_decision_ts)}` : "—"}</div></div>
       </div>
-      <div class="note" style="margin-top:10px">Стажёры торгуют в тени на своих демосчетах по 1000 $, каждый в своём ритме. Первые часы у большинства нули: стратегия ждёт своего сигнала, а сделка стоит комиссию, поэтому без сигнала они сидят в долларах. Через 14 дней лучший предлагается на замену худшему в команде, при просадке 10% стажёр отчисляется.</div></div>
+      <div class="note" style="margin-top:10px">Котята торгуют в тени на своих демосчетах по 1000 $. Каждый понедельник ротация: коты из команды с минусом за неделю (до трёх худших) уходят в котята на испытательный срок, а лучшие котята с плюсом за неделю занимают их места со свежим счётом. Котёнок с минусом две недели подряд отчисляется. Кот, три недели подряд в плюсе, становится кандидатом на реальный счёт.</div></div>
       <div class="card list"><h3>Рейтинг · нажмите на строку</h3><div class="acc-head"><span>Стажёр</span><span>Ритм</span><span>За 24 ч</span><span>За всё время</span><span></span></div>${s.interns.map((a) => agentRow(a)).join("")}</div>
       <div class="card"><h3>Что они делают прямо сейчас · последние решения</h3>${feed.length ? `<ul class="feed">${feed.map((d) => `<li><time>${hhmm(d.ts)}</time><b>${esc(d.agent)}</b><span class="tag ${d.action === "BUY" ? "buy" : d.action === "SELL" ? "sell" : ""}">${ACTION[d.action] || d.action}${d.trade_side ? (d.trade_side === "BUY" ? " · купил" : " · продал") : ""}</span><span class="muted">${esc(d.reason)}</span></li>`).join("")}</ul>` : '<div class="note">Первые решения появятся в ближайший час, у каждого стажёра в свою минуту.</div>'}</div>`;
   }

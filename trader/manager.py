@@ -172,30 +172,88 @@ class DepartmentHead:
         self.j.event("hire", f"{intern.name} повышен из стажёров ({reason}; за {days:.0f} дн. стажировки {pnl:+.2f} $)", intern.name, ts=ts)
         log.info("Повышен %s", intern.name)
 
-    # --- ежедневный разбор ---
+    # --- ежедневный отчёт ---
     def review(self, agents: list[Agent], price: float, ts: int) -> None:
         day_key = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
         if self.j.kv_get("review_day") == day_key:
             return
         self.j.kv_set("review_day", day_key)
         team = [a for a in agents if is_team(a)]
+        if team:
+            self._report(team, [a for a in agents if is_intern(a)], price, ts)
+
+    # --- недельная ротация ---
+    @staticmethod
+    def week_key(ts: int) -> str:
+        d = datetime.fromtimestamp(ts, tz=timezone.utc).isocalendar()
+        return f"{d[0]}-W{d[1]:02d}"
+
+    def weekly_review(self, agents: list[Agent], price: float, ts: int) -> dict:
+        """Понедельник, начало недели по UTC.
+
+        1. Члены команды с минусом за неделю (не больше weekly_demote_max худших) → стажёры на испытательный срок.
+        2. Их места занимают лучшие стажёры с плюсом за неделю (со свежим счётом).
+        3. Серия недель в плюсе: live_ready_weeks подряд → кандидат на реальный счёт.
+        4. Стажёр с минусом две недели подряд → отчислен, его место займёт новый кандидат.
+        """
+        res = {"demoted": [], "promoted": [], "dropped": [], "live_ready": []}
+        team = [a for a in agents if is_team(a)]
+        interns = [a for a in agents if is_intern(a)]
         if not team:
-            return
-        pending_kinds = {(p["kind"], p["details"].get("agent")) for p in self.j.pending_approvals()}
-        seasoned = [a for a in team if self._days(a) >= TENURE_DAYS]
-        if seasoned:
-            worst = min(seasoned, key=lambda a: a.pnl_total(price))
-            if worst.pnl_total(price) < 0 and ("promote", worst.name) not in pending_kinds and ("fire", worst.name) not in pending_kinds:
-                best = self.best_intern(agents, price, min_days=TENURE_DAYS)
-                if best is not None and best.pnl_total(price) > worst.pnl_total(price):
-                    self.j.request_approval(
-                        "promote", f"Заменить {worst.name} стажёром {best.name}?",
-                        {"agent": worst.name, "intern": best.name, "agent_pnl": round(worst.pnl_total(price), 2),
-                         "intern_pnl": round(best.pnl_total(price), 2)}, ts=ts)
-                else:
-                    self.j.request_approval("fire", f"Уволить {worst.name}? Худший результат за {TENURE_DAYS}+ дней",
-                                            {"agent": worst.name, "pnl": round(worst.pnl_total(price), 2)}, ts=ts)
-        self._report(team, [a for a in agents if is_intern(a)], price, ts)
+            return res
+        # серии
+        for a in team:
+            if a.week_start_equity <= 0:
+                continue
+            if a.pnl_week_pct(price) > 0:
+                a.streak_weeks += 1
+            else:
+                a.streak_weeks = 0
+            if a.trial_weeks:
+                a.trial_weeks += 1
+            if a.streak_weeks >= self.s.live_ready_weeks and not a.live_ready:
+                a.live_ready = True
+                res["live_ready"].append(a.name)
+                self.j.event("live_ready", f"{a.name}: {a.streak_weeks} недели подряд в плюсе, кандидат на реальный счёт", a.name, ts=ts)
+                self.j.request_approval("live", f"{a.name} готов к реальным торгам. Переводить?",
+                                        {"agent": a.name, "streak_weeks": a.streak_weeks}, ts=ts)
+        # понижение
+        rated = sorted([a for a in team if a.week_start_equity > 0], key=lambda a: a.pnl_week_pct(price))
+        losers = [a for a in rated if a.pnl_week_pct(price) < 0][: self.s.weekly_demote_max]
+        for a in losers:
+            pct = a.pnl_week_pct(price)
+            a.account.flatten(price, ts, "перевод в стажёры")
+            a.reset_account(self.s.agent_start_balance, ts)
+            a.status = "intern"
+            a.streak_weeks = 0
+            a.trial_weeks = 1
+            a.live_ready = False
+            self.j.save_agent(a)
+            res["demoted"].append(a.name)
+            self.j.event("demote", f"{a.name} переведён в стажёры: неделя {pct:+.2f}%", a.name, ts=ts)
+        # повышение лучших стажёров с плюсом за неделю
+        vacancies = self.team_size - len([a for a in agents if is_team(a)])
+        cands = sorted([a for a in interns if a.week_start_equity > 0 and a.pnl_week_pct(price) > 0],
+                       key=lambda a: a.pnl_week_pct(price), reverse=True)
+        for a in cands[:max(0, vacancies)]:
+            pct = a.pnl_week_pct(price)
+            self.promote(a, price, ts, f"лучший стажёр недели, {pct:+.2f}%")
+            a.trial_weeks = 1
+            a.streak_weeks = 0
+            self.j.save_agent(a)
+            res["promoted"].append(a.name)
+        # отчисление стажёров с минусом две недели подряд
+        for a in [x for x in agents if is_intern(x) and x.week_start_equity > 0]:
+            if a.pnl_week_pct(price) < 0:
+                a.streak_weeks -= 1          # у стажёров отрицательная серия = недели в минусе подряд
+                if a.streak_weeks <= -2:
+                    self.drop_intern(a, price, ts, "две недели подряд в минусе")
+                    res["dropped"].append(a.name)
+            else:
+                a.streak_weeks = 0
+        self.j.event("weekly", f"Недельная ротация: в стажёры {len(res['demoted'])}, в команду {len(res['promoted'])}, "
+                               f"отчислено {len(res['dropped'])}, кандидатов на реальный счёт {len(res['live_ready'])}", None, res, ts=ts)
+        return res
 
     def _report(self, team: list[Agent], interns: list[Agent], price: float, ts: int) -> None:
         rows = [a.snapshot(price) for a in team]

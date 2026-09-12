@@ -79,3 +79,7 @@ class AgentSnapshot:
     alert_above: float = 0.0
     alert_below: float = 0.0
     stop_price: float = 0.0
+    pnl_week: float = 0.0
+    streak_weeks: int = 0
+    trial_weeks: int = 0
+    live_ready: bool = False
