@@ -33,9 +33,8 @@ class Scheduler:
             except Exception:  # noqa: BLE001
                 log.exception("ошибка тика")
             now = int(time.time())
-            next_close = (now // step + 1) * step + 15   # 15 секунд после закрытия свечи
-            wait = min(self.poll, max(5, next_close - now))
-            self._stop.wait(wait)
+            next_minute = (now // 60 + 1) * 60 + 5        # каждую минуту, через 5 с после её начала
+            self._stop.wait(max(5, next_minute - now))
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():

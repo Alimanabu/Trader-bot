@@ -56,11 +56,18 @@ class Agent:
     notes: list[str] = field(default_factory=list)   # уроки для LLM-агентов
     bars_in_position: int = 0
     last_ts_seen: int = 0
+    last_decided_ts: int = 0     # ts свечи, по которой агент уже принял решение
+    slot_minute: int = 0         # минута часа, в которую агент принимает решение
 
     def start_balance(self) -> float:
         return self._start_balance
 
     def __post_init__(self) -> None:
+        if not self.slot_minute:
+            h = 0
+            for ch in self.name:
+                h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+            self.slot_minute = 1 + h % 55
         self._start_balance = self.account.cash + self.account.btc * self.last_price
         self.peak_equity = self.peak_equity or self._start_balance
         self.day_start_equity = self.day_start_equity or self._start_balance
@@ -131,6 +138,8 @@ class Agent:
             last_action=(self.last_signal.action.value if self.last_signal else ""),
             last_trade_ts=(self.account.trades[-1].ts if self.account.trades else 0),
             description=self.strategy.description,
+            slot_minute=self.slot_minute,
+            last_decided_ts=self.last_decided_ts,
         )
 
 

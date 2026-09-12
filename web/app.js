@@ -19,12 +19,15 @@
   const astanaTime = (d) => d.toLocaleTimeString("ru-RU", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
   window.astanaClock = () => "Астана " + astana();
   function nextCandleInfo() {
-    const step = 3600, now = Date.now() / 1000;
-    const next = (Math.floor(now / step) + 1) * step + 15;    // решение через 15 с после закрытия свечи
-    const left = Math.max(0, next - now);
+    const now = Date.now() / 1000;
+    const up = (state && state.upcoming || []).filter((u) => u.ts > now - 60);
+    if (!up.length) return "ждём первую свечу";
+    const first = up[0];
+    const left = Math.max(0, first.ts - now);
     const m = Math.floor(left / 60), sec = Math.floor(left % 60);
-    const when = astanaTime(new Date(next * 1000));
-    return left < 60 ? `решение вот-вот, в ${when}` : `следующее решение через ${m} мин ${String(sec).padStart(2, "0")} с, в ${when}`;
+    const others = up.slice(1, 3).map((u) => `${u.name.replace(/\s*\(.*\)/, "")} в ${astanaTime(new Date(u.ts * 1000))}`).join(", ");
+    const head = left < 60 ? `${first.name.replace(/\s*\(.*\)/, "")} решает вот-вот, в ${astanaTime(new Date(first.ts * 1000))}` : `${first.name.replace(/\s*\(.*\)/, "")} решает через ${m} мин ${String(sec).padStart(2, "0")} с, в ${astanaTime(new Date(first.ts * 1000))}`;
+    return head + (others ? `; далее ${others}` : "");
   }
   function tickClock() {
     const el = $("#clock"); if (!el) return;
@@ -42,7 +45,7 @@
   // ---------- шапка ----------
   function renderTop(s) {
     const d = s.department;
-    $("#meta").textContent = `${s.symbol} ${s.timeframe} · ${s.market} · свеча ${s.last_tick_ts ? time(s.last_tick_ts) : "—"}` + (s.error ? ` · ${s.error}` : "") + (d.halted ? " · ОТДЕЛ ОСТАНОВЛЕН" : "");
+    $("#meta").textContent = `${s.symbol} ${s.timeframe} · ${s.market} · свеча закрыта ${s.candle_close_ts ? astanaTime(new Date(s.candle_close_ts * 1000)) : "—"}` + (s.error ? ` · ${s.error}` : "") + (d.halted ? " · ОТДЕЛ ОСТАНОВЛЕН" : "");
     $("#dot").className = "dot " + (s.error ? "err" : "ok");
   }
 
@@ -94,7 +97,7 @@
         <canvas id="office" style="margin-top:8px"></canvas>
         <div class="legend"><span><i style="background:var(--btc)"></i>монитор горит оранжевым: агент в BTC</span><span><i style="background:var(--up)"></i>бирка в плюсе</span><span><i style="background:var(--down)"></i>бирка в минусе</span><span><i style="background:var(--violet)"></i>кабинеты отделов слева, стажёры в дальних рядах</span></div>
         <div class="note" style="margin-top:6px">Тяните, чтобы двигать зал, щипок или колесо для зума, нажатие на сотрудника открывает его карточку.</div></div>
-      <div class="card chart fade"><h3>Капитал отдела</h3>
+      <div class="card chart fade"><h3>Результат отдела, $</h3>
         <div class="range"><button data-r="day" class="${range === "day" ? "active" : ""}">День</button><button data-r="week" class="${range === "week" ? "active" : ""}">Неделя</button><button data-r="all" class="${range === "all" ? "active" : ""}">Всё время</button></div>
         <canvas id="chart"></canvas><div class="tip" id="tip"></div><div class="note" id="chart-note"></div></div>
       ${allocHTML(s)}
@@ -204,10 +207,8 @@
   // ---------- график капитала ----------
   async function drawChart() {
     const canvas = $("#chart"); if (!canvas) return;
-    if (!equityData) equityData = await api("/api/equity");
-    const byTs = new Map();
-    Object.values(equityData).forEach((series) => series.forEach((p) => byTs.set(p.ts, (byTs.get(p.ts) || 0) + p.equity)));
-    let pts = [...byTs.entries()].sort((a, b) => a[0] - b[0]);
+    if (!equityData) equityData = await api("/api/curve");
+    let pts = equityData.map((p) => [p.ts, p.pnl]);
     chartPoints = pts.slice(-168);
     const last = pts.length ? pts[pts.length - 1][0] : 0;
     if (range === "day") pts = pts.filter((p) => p[0] >= last - 86400);
@@ -228,12 +229,12 @@
     ctx.beginPath(); pts.forEach((p, i) => (i ? ctx.lineTo(x(i), y(p[1])) : ctx.moveTo(x(i), y(p[1])))); ctx.lineTo(x(pts.length - 1), H - B); ctx.lineTo(x(0), H - B); ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
     ctx.beginPath(); ctx.strokeStyle = upc ? "#34d27b" : "#ff6b6b"; ctx.lineWidth = 2; pts.forEach((p, i) => (i ? ctx.lineTo(x(i), y(p[1])) : ctx.moveTo(x(i), y(p[1])))); ctx.stroke();
     ctx.fillStyle = "#8a93a8"; ctx.font = "10px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.textAlign = "left"; ctx.fillText(time(pts[0][0]), L, H - 4); ctx.textAlign = "right"; ctx.fillText(time(pts[pts.length - 1][0]), W - R, H - 4);
-    note.textContent = `мин ${fmt(min)} $ · макс ${fmt(max)} $ · изменение за период ${sign(ys[ys.length - 1] - ys[0])} $`;
+    note.textContent = `результат отдела: мин ${sign(min)} $ · макс ${sign(max)} $ · за период ${sign(ys[ys.length - 1] - ys[0])} $`;
     const tip = $("#tip");
     const onMove = (ev) => {
       const b = canvas.getBoundingClientRect(); const px = (ev.touches ? ev.touches[0].clientX : ev.clientX) - b.left;
       const i = Math.max(0, Math.min(pts.length - 1, Math.round(((px - L) / (W - L - R)) * (pts.length - 1))));
-      tip.style.display = "block"; tip.innerHTML = `${time(pts[i][0])}<br><b class="num">${fmt(pts[i][1])} $</b>`;
+      tip.style.display = "block"; tip.innerHTML = `${time(pts[i][0])}<br><b class="num">${sign(pts[i][1])} $</b>`;
       tip.style.left = Math.min(W - 130, Math.max(0, x(i) - 60)) + "px"; tip.style.top = Math.max(0, y(pts[i][1]) - 44) + "px";
     };
     canvas.onmousemove = onMove; canvas.ontouchstart = onMove; canvas.ontouchmove = onMove;
@@ -254,6 +255,7 @@
         <div><div class="k">Сегодня</div><div class="v num ${cls(a.pnl_day)}">${sign(a.pnl_day)} $</div></div>
         <div><div class="k">Просадка</div><div class="v num">${fmt(a.drawdown * 100, 1)}%</div></div>
         <div><div class="k">Сделок · побед</div><div class="v num">${a.trades} · ${fmt(a.win_rate * 100, 0)}%</div></div>
+        <div><div class="k">Решает каждый час</div><div class="v num">в :${String(a.slot_minute).padStart(2, "0")}</div></div>
       </div>
       ${d.lessons.length ? `<h3 style="margin:14px 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase">Уроки из журнала</h3><ul style="padding-left:18px;font-size:13px">${d.lessons.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}
       <h3 style="margin:14px 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase">Последние решения</h3>

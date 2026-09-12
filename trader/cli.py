@@ -46,7 +46,8 @@ def main(argv: list[str] | None = None) -> int:
         market = SyntheticMarket(seed=args.seed)
         eng = Engine(settings, market=market, journal=Journal(args.db), client=ClaudeClient(None))
         for _ in range(args.hours):
-            res = eng.tick()
+            last = market.candles(settings.symbol, settings.timeframe, 1)[-1]
+            res = eng.tick(now=last.ts + 2 * 3600)
             market.advance(1)
             if res.get("fired") or res.get("hired") or res.get("halt"):
                 print(json.dumps({k: res[k] for k in ("ts", "fired", "hired") if k in res} | ({"halt": res["halt"]} if "halt" in res else {}), ensure_ascii=False))

@@ -67,7 +67,8 @@ class Engine:
                           for t in self.j.trades_for(r["name"])]
             a = Agent(name=r["name"], strategy=strat, account=acc, status=r["status"], hired_at=r["hired_at"],
                       peak_equity=r["peak_equity"], day_start_equity=r["day_start_equity"], day_key=r["day_key"],
-                      notes=json.loads(r["notes"] or "[]"))
+                      notes=json.loads(r["notes"] or "[]"), last_decided_ts=int(r.get("last_decided_ts") or 0),
+                      slot_minute=int(r.get("slot_minute") or 0))
             a._start_balance = r["start_balance"]
             a.last_price = self.last_price
             self.agents.append(a)
@@ -93,7 +94,31 @@ class Engine:
         self.j.kv_set("last_price", self.last_price)
 
     # --- тик ---
-    def tick(self, candles: list[Candle] | None = None, force: bool = False) -> dict:
+    def _step_seconds(self) -> int:
+        from .data.market import TIMEFRAME_SECONDS
+        return TIMEFRAME_SECONDS.get(self.s.timeframe, 3600)
+
+    def next_decision_ts(self, a: Agent, now: int | None = None) -> int:
+        """Когда агент примет следующее решение (unix-время)."""
+        step = self._step_seconds()
+        now = int(now or time.time())
+        last_open = self.last_tick_ts or (now // step * step - step)
+        due = last_open + step + a.slot_minute * 60
+        if a.last_decided_ts < last_open and now < due:
+            return due
+        # по текущей свече уже решил (или пропустил): следующая свеча
+        nxt = max(last_open + step, now // step * step)
+        return nxt + step + a.slot_minute * 60
+
+    def tick(self, candles: list[Candle] | None = None, force: bool = False, now: float | None = None) -> dict:
+        """Один проход планировщика. Вызывается раз в минуту.
+
+        Каждый агент принимает решение по последней закрытой свече в свою минуту часа
+        (slot_minute) и исполняет его по текущей цене. Капитал пересчитывается по живой цене
+        на каждом проходе.
+        """
+        now_i = int(now or time.time())
+        step = self._step_seconds()
         try:
             candles = candles or self.market.candles(self.s.symbol, self.s.timeframe, self.s.history_candles)
         except Exception as e:  # noqa: BLE001
@@ -104,62 +129,80 @@ class Engine:
         if not candles:
             return {"ok": False, "error": "нет свечей"}
         last = candles[-1]
+        try:
+            price = float(self.market.price(self.s.symbol))
+        except Exception as e:  # noqa: BLE001
+            log.warning("текущая цена недоступна (%s), беру закрытие свечи", e)
+            price = last.close
         self.last_candles = candles
-        self.last_price = last.close
+        self.last_price = price
         self.last_error = ""
-        if last.ts <= self.last_tick_ts and not force:
-            return {"ok": True, "skipped": True, "ts": last.ts}
-        price, ts = last.close, last.ts
-        dk = day_key_of(ts)
-        summary = {"ok": True, "ts": ts, "price": price, "decisions": [], "fired": [], "hired": []}
+        new_candle = last.ts > self.last_tick_ts
+        if new_candle:
+            self.last_tick_ts = last.ts
+        close_ts = last.ts + step
+        dk = day_key_of(now_i if not force else close_ts)
+        summary = {"ok": True, "ts": last.ts, "price": price, "new_candle": new_candle, "decisions": [], "fired": [], "hired": []}
 
-        for a in self.agents:
-            if a.status in {"fired", "dropped"}:
-                continue
-            a.last_ts_seen = ts
-            if a.hired_at > ts:          # создан «по часам сервера» раньше, чем пришла первая свеча
-                a.hired_at = ts
+        alive = [a for a in self.agents if a.status not in {"fired", "dropped"}]
+        for a in alive:
+            a.last_ts_seen = now_i
+            if a.hired_at > now_i:
+                a.hired_at = now_i
             a.roll_day(dk, price)
             a.observe(price)
 
-        # Стажёры торгуют в тени: без дневных пауз, но с отчислением за просадку.
-        for a in [x for x in self.agents if is_intern(x)]:
-            self._intern_step(a, candles, price, ts)
-
+        # лимит отдела проверяется на каждом проходе
         ok, why = self.risk.check_department([a for a in self.agents if is_team(a)], price, dk)
         if not ok:
+            halted_now = False
             for a in self.agents:
-                if a.status in {"active", "paused"}:
-                    t = a.account.flatten(price, ts, f"стоп отдела: {why}")
+                if is_team(a):
+                    t = a.account.flatten(price, now_i, f"стоп отдела: {why}")
                     if t:
                         self.j.trade(t)
-                    a.status = "paused"
-                    self.j.equity(ts, a.name, a.equity(price), price)
-            self.j.event("halt", f"Отдел остановлен: {why}", None, ts=ts)
+                        halted_now = True
+                    if a.status != "paused":
+                        a.status = "paused"
+                        halted_now = True
+                    self.j.equity(now_i, a.name, a.equity(price), price)
+            if halted_now:
+                self.j.event("halt", f"Отдел остановлен: {why}", None, ts=now_i)
             summary["halt"] = why
-        else:
-            for a in self.agents:
-                if not is_team(a):
-                    continue
-                summary["decisions"].append(self._agent_step(a, candles, price, ts))
+
+        # кто должен принять решение в эту минуту
+        due: list[Agent] = []
+        for a in alive:
+            if a.last_decided_ts >= last.ts:
+                continue
+            if force or now_i >= close_ts + a.slot_minute * 60:
+                due.append(a)
+        for a in due:
+            a.last_decided_ts = last.ts
+            if is_intern(a):
+                self._intern_step(a, candles, price, now_i)
+            elif is_team(a) and ok:
+                summary["decisions"].append(self._agent_step(a, candles, price, now_i))
                 if a.status == "fired":
                     summary["fired"].append(a.name)
 
-        self.learner.after_tick(self.agents, candles)
-        hired = self.head.hire_if_needed(self.agents, candles, ts)
-        new_interns = self.head.fill_interns(self.agents, candles, ts)
+        if new_candle:
+            self.learner.after_tick(self.agents, candles)
+        hired = self.head.hire_if_needed(self.agents, candles, now_i)
+        new_interns = self.head.fill_interns(self.agents, candles, now_i)
         for h in hired + new_interns:
-            h.last_ts_seen = ts
+            h.last_ts_seen = now_i
             h.roll_day(dk, price)
             h.observe(price)
-            self.j.equity(ts, h.name, h.equity(price), price)
+            self.j.equity(now_i, h.name, h.equity(price), price)
         self.agents.extend([h for h in hired if h not in self.agents])
         self.agents.extend(new_interns)
         summary["hired"] = [h.name for h in hired]
         summary["interns_added"] = [h.name for h in new_interns]
-        self.head.review(self.agents, price, ts)
-
-        self.last_tick_ts = ts
+        if new_candle:
+            self.head.review(self.agents, price, now_i)
+        if not new_candle and not due and not hired and not new_interns:
+            summary["skipped"] = True
         self.save()
         return summary
 
@@ -226,7 +269,14 @@ class Engine:
     # --- панель ---
     def state(self) -> dict:
         price = self.last_price
-        snaps = [a.snapshot(price).__dict__ for a in self.agents if a.status not in {"intern", "dropped"}]
+        now_i = int(time.time())
+        snaps = []
+        for a in self.agents:
+            if a.status in {"intern", "dropped"}:
+                continue
+            d = a.snapshot(price).__dict__
+            d["next_decision_ts"] = self.next_decision_ts(a, now_i) if a.status in {"active", "paused"} else 0
+            snaps.append(d)
         interns = []
         for a in self.agents:
             if is_intern(a):
@@ -237,9 +287,12 @@ class Engine:
         alive = [s for s in snaps if s["status"] != "fired"]
         total = sum(s["equity"] for s in alive)
         start = sum(a.start_balance() for a in self.agents if is_team(a))
+        upcoming = sorted(({"name": d["name"], "ts": d["next_decision_ts"]} for d in snaps if d["next_decision_ts"]), key=lambda x: x["ts"])
         return {
-            "now": int(time.time()),
+            "now": now_i,
             "last_tick_ts": self.last_tick_ts,
+            "candle_close_ts": (self.last_tick_ts + self._step_seconds()) if self.last_tick_ts else 0,
+            "upcoming": upcoming[:6],
             "price": price,
             "symbol": self.s.symbol,
             "timeframe": self.s.timeframe,

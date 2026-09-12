@@ -73,6 +73,14 @@ class Journal:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(SCHEMA)
+            self._migrate()
+
+    def _migrate(self) -> None:
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(agents)").fetchall()}
+        for col, ddl in (("last_decided_ts", "INTEGER NOT NULL DEFAULT 0"), ("slot_minute", "INTEGER NOT NULL DEFAULT 0")):
+            if col not in cols:
+                self._conn.execute(f"ALTER TABLE agents ADD COLUMN {col} {ddl}")
+        self._conn.commit()
 
     # --- служебное ---
     def _exec(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -153,6 +161,30 @@ class Journal:
         rows = self._rows("SELECT ts, equity, price FROM equity WHERE agent=? ORDER BY ts DESC LIMIT ?", (agent, limit))
         return list(reversed(rows))
 
+    def department_curve(self, names: set[str], bucket: int = 3600, limit: int = 2000) -> list[dict]:
+        """Результат отдела по часам: сумма (капитал − стартовый баланс) по агентам.
+
+        Каждому агенту в каждом часе берётся последнее известное значение (тянется вперёд),
+        поэтому добавление или увольнение агента не даёт ложных скачков от самого капитала.
+        """
+        if not names:
+            return []
+        marks = ",".join("?" * len(names))
+        starts = {r["name"]: r["start_balance"] for r in self._rows(f"SELECT name, start_balance FROM agents WHERE name IN ({marks})", tuple(names))}
+        rows = self._rows(f"SELECT ts, agent, equity FROM equity WHERE agent IN ({marks}) ORDER BY ts", tuple(names))
+        if not rows:
+            return []
+        buckets: dict[int, dict[str, float]] = {}
+        for r in rows:
+            b = r["ts"] // bucket * bucket
+            buckets.setdefault(b, {})[r["agent"]] = r["equity"] - starts.get(r["agent"], 0.0)
+        out = []
+        carry: dict[str, float] = {}
+        for b in sorted(buckets):
+            carry.update(buckets[b])
+            out.append({"ts": b, "pnl": round(sum(carry.values()), 2), "agents": len(carry)})
+        return out[-limit:]
+
     def daily_department(self, names: set[str]) -> list[dict]:
         """Капитал команды по дням: сумма последних за день значений каждого агента."""
         if not names:
@@ -183,14 +215,16 @@ class Journal:
     def save_agent(self, a) -> None:
         self._exec(
             "INSERT INTO agents(name,strategy,params,status,hired_at,cash,btc,peak_equity,day_start_equity,day_key,"
-            "start_balance,realized_pnl,avg_entry,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "start_balance,realized_pnl,avg_entry,notes,last_decided_ts,slot_minute) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(name) DO UPDATE SET strategy=excluded.strategy, params=excluded.params, status=excluded.status,"
             " hired_at=excluded.hired_at, cash=excluded.cash, btc=excluded.btc, peak_equity=excluded.peak_equity,"
             " day_start_equity=excluded.day_start_equity, day_key=excluded.day_key, start_balance=excluded.start_balance,"
-            " realized_pnl=excluded.realized_pnl, avg_entry=excluded.avg_entry, notes=excluded.notes",
+            " realized_pnl=excluded.realized_pnl, avg_entry=excluded.avg_entry, notes=excluded.notes,"
+            " last_decided_ts=excluded.last_decided_ts, slot_minute=excluded.slot_minute",
             (a.name, a.strategy.family, json.dumps(a.strategy.params), a.status, a.hired_at, a.account.cash,
              a.account.btc, a.peak_equity, a.day_start_equity, a.day_key, a.start_balance(),
-             a.account.realized_pnl, a.account._avg_entry, json.dumps(a.notes, ensure_ascii=False)))
+             a.account.realized_pnl, a.account._avg_entry, json.dumps(a.notes, ensure_ascii=False),
+             a.last_decided_ts, a.slot_minute))
 
     def mark_fired(self, name: str, ts: int) -> None:
         self._exec("UPDATE agents SET status='fired', fired_at=? WHERE name=?", (ts, name))

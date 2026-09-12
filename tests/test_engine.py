@@ -20,6 +20,7 @@ def test_tick_records_decisions_and_skips_duplicate(settings):
     res = eng.tick()
     assert res["ok"] and len(res["decisions"]) == 11
     assert len(res["interns_added"]) == settings.intern_count
+    eng.tick()                      # стажёры принимают первые решения
     again = eng.tick()
     assert again.get("skipped")
     market.advance(1)
@@ -43,12 +44,20 @@ def test_state_persists_between_engines(settings):
     assert eng2.last_tick_ts == eng.last_tick_ts
 
 
+def force_drawdown(eng, names=None):
+    """Имитировать просадку: поднять пик капитала, чтобы риск-менеджер уволил агента."""
+    for a in eng.agents:
+        if a.status in {"active", "paused"} and (names is None or a.name in names):
+            a.peak_equity = a.equity(a.last_price) * 1.5
+
+
 def test_team_size_stays_ten_after_firing(settings):
-    settings.agent_max_drawdown = 0.001   # уволят почти всех сразу
     settings.agent_daily_loss_limit = 0.9
     settings.dept_daily_loss_limit = 0.9
     eng, market = make_engine(settings)
-    for _ in range(12):
+    eng.tick(); market.advance(1)
+    force_drawdown(eng, {a.name for a in eng.agents[:4]})
+    for _ in range(3):
         eng.tick()
         market.advance(1)
     team = [a for a in eng.agents if a.status in {"active", "paused"}]
@@ -61,11 +70,12 @@ def test_team_size_stays_ten_after_firing(settings):
 
 def test_manual_approval_flow(settings):
     settings.auto_hire = False
-    settings.agent_max_drawdown = 0.001
     settings.agent_daily_loss_limit = 0.9
     settings.dept_daily_loss_limit = 0.9
     eng, market = make_engine(settings)
-    for _ in range(12):
+    eng.tick(); market.advance(1)
+    force_drawdown(eng, {eng.agents[0].name})
+    for _ in range(3):
         eng.tick()
         market.advance(1)
     pend = eng.j.pending_approvals()
@@ -130,3 +140,23 @@ def test_promotion_approval(settings):
     assert worst.status == "fired"
     assert intern.status == "active"
     assert abs(intern.equity(price) - settings.agent_start_balance) < 1e-6
+
+
+def test_agents_decide_in_their_own_minute(settings):
+    settings.intern_count = 0
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    close = last.ts + 3600
+    # в момент закрытия свечи никто ещё не решает
+    res = eng.tick(now=close + 1)
+    assert res["decisions"] == []
+    # через 30 минут решили только те, чья минута ≤ 30
+    res = eng.tick(now=close + 30 * 60)
+    early = {a.name for a in eng.agents if a.slot_minute <= 30}
+    assert {d["agent"] for d in res["decisions"]} == early
+    # к концу часа решили все, и повторно в этот час никто не решает
+    res = eng.tick(now=close + 59 * 60)
+    assert {d["agent"] for d in res["decisions"]} == {a.name for a in eng.agents} - early
+    assert eng.tick(now=close + 59 * 60 + 30).get("skipped")
+    nxt = eng.next_decision_ts(eng.agents[0], close + 59 * 60 + 30)
+    assert nxt == close + 3600 + eng.agents[0].slot_minute * 60

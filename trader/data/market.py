@@ -23,6 +23,11 @@ class MarketData(ABC):
     def candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
         """Последние `limit` закрытых свечей, от старых к новым."""
 
+    def price(self, symbol: str) -> float:
+        """Текущая цена. По умолчанию — закрытие последней свечи."""
+        c = self.candles(symbol, "1h", 2)
+        return c[-1].close
+
 
 class BinanceMarket(MarketData):
     name = "binance"
@@ -40,6 +45,11 @@ class BinanceMarket(MarketData):
         rows = r.json()
         out = [Candle(int(k[0]) // 1000, float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])) for k in rows]
         return _drop_open_candle(out, timeframe)
+
+    def price(self, symbol: str) -> float:
+        r = self.client.get(f"{self.base_url}/api/v3/ticker/price", params={"symbol": symbol})
+        r.raise_for_status()
+        return float(r.json()["price"])
 
 
 class BybitMarket(MarketData):
@@ -61,6 +71,11 @@ class BybitMarket(MarketData):
         out.sort(key=lambda c: c.ts)
         return _drop_open_candle(out, timeframe)
 
+    def price(self, symbol: str) -> float:
+        r = self.client.get(f"{self.base_url}/v5/market/tickers", params={"category": "spot", "symbol": symbol})
+        r.raise_for_status()
+        return float(r.json()["result"]["list"][0]["lastPrice"])
+
 
 class FallbackMarket(MarketData):
     """Пробует источники по очереди: если Binance недоступен, берёт Bybit."""
@@ -81,6 +96,15 @@ class FallbackMarket(MarketData):
                 last_err = e
                 log.warning("Источник %s недоступен: %s", src.name, e)
         raise RuntimeError(f"Ни один источник котировок не ответил: {last_err}")
+
+    def price(self, symbol: str) -> float:
+        last_err: Exception | None = None
+        for src in self.sources:
+            try:
+                return src.price(symbol)
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+        raise RuntimeError(f"Нет текущей цены: {last_err}")
 
 
 class SyntheticMarket(MarketData):
@@ -123,13 +147,17 @@ class SyntheticMarket(MarketData):
         """Сдвинуть «текущее время» вперёд на n свечей (для симуляции)."""
         self._offset += n
 
+    def price(self, symbol: str) -> float:
+        return self.candles(symbol, "1h", 1)[-1].close
+
+    _reserve = 1500   # сколько свечей оставлено «в будущем» для advance()
+
     def candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
-        total = limit + self._offset + 1
-        if len(self._cache) < total:
-            self._cache = self._generate(max(total, 6000), timeframe)
-        end = len(self._cache) - 1 - max(0, (len(self._cache) - 1 - limit - self._offset))
-        end = min(len(self._cache), limit + self._offset)
-        return self._cache[max(0, end - limit):end]
+        if not self._cache:
+            self._cache = self._generate(6000, timeframe)
+        # «текущая» свеча: последняя перед резервом, сдвинутая на offset
+        cur = min(len(self._cache) - 1, len(self._cache) - self._reserve + self._offset)
+        return self._cache[max(0, cur - limit + 1):cur + 1]
 
 
 def _drop_open_candle(candles: list[Candle], timeframe: str) -> list[Candle]:

@@ -167,8 +167,11 @@
       ctx.textBaseline = "alphabetic"; ctx.textAlign = "left";
       ctx.fillStyle = "#8e86b8"; ctx.font = "600 9px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.fillText("ТОРГОВЫЙ ЗАЛ · ТАБЛО ОТДЕЛА · ДЕМОСЧЁТ", 12, 16);
       ctx.fillStyle = "#f4f1ff"; ctx.font = "700 26px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.fillText(d.equity.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " $", 12, 44);
+      // ближайшие решения
+      const up = (state.upcoming || []).slice(0, 2).map((u) => `${short(u.name)} в ${new Date(u.ts * 1000).toLocaleTimeString("ru-RU", { timeZone: "Asia/Almaty", hour: "2-digit", minute: "2-digit" })}`).join(", ");
       ctx.font = "600 12px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.fillStyle = dayPnl > 0 ? C.up : dayPnl < 0 ? C.down : "#c9c1e8"; ctx.fillText(money(dayPnl) + " сегодня", 12, 62);
       ctx.fillStyle = d.pnl > 0 ? C.up : d.pnl < 0 ? C.down : "#c9c1e8"; ctx.fillText(money(d.pnl) + " всего", 12, 78);
+      if (up) { ctx.fillStyle = "#8e86b8"; ctx.font = "9px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.fillText("далее: " + up, 12, 92); }
       // мини-график
       const gx0 = Math.max(180, W * 0.42), gw = W - gx0 - 12, gy0 = 22, gh = HUD - 48;
       ctx.fillStyle = "rgba(255,255,255,.03)"; ctx.fillRect(gx0, gy0, gw, gh);
@@ -179,6 +182,7 @@
         pts.forEach((p, i) => { const x = gx0 + (i / (pts.length - 1)) * gw, y = gy0 + gh - ((p[1] - mn) / sp) * (gh - 6) - 3; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
         ctx.stroke();
         const bl = Math.floor(t / 600) % 2 === 0; if (bl) { const last = pts[pts.length - 1]; const x = gx0 + gw, y = gy0 + gh - ((last[1] - mn) / sp) * (gh - 6) - 3; ctx.fillStyle = ctx.strokeStyle; ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill(); }
+        ctx.fillStyle = "#8e86b8"; ctx.font = "9px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.textAlign = "left"; ctx.fillText("результат отдела, $", gx0 + 4, gy0 + 10);
       } else { ctx.fillStyle = "#5d5590"; ctx.font = "10px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.fillText("график накапливается", gx0 + 8, gy0 + gh / 2 + 4); }
       ctx.fillStyle = "#8e86b8"; ctx.font = "9px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.textAlign = "right";
       ctx.fillText(`${window.astanaClock ? window.astanaClock() : ""} · BTC ${state.price.toLocaleString("ru-RU", { maximumFractionDigits: 0 })} $`, W - 12, 16);

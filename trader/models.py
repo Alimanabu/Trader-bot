@@ -70,3 +70,6 @@ class AgentSnapshot:
     last_action: str = ""
     last_trade_ts: int = 0
     description: str = ""
+    slot_minute: int = 0
+    last_decided_ts: int = 0
+    next_decision_ts: int = 0
