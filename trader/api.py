@@ -1,12 +1,14 @@
 """Веб-панель и JSON API."""
 from __future__ import annotations
 
+import base64
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .config import load_settings
@@ -33,6 +35,25 @@ def create_app(engine: Engine | None = None, start_scheduler: bool = True) -> Fa
     app = FastAPI(title="Отдел BTC-агентов", version="0.1.0", lifespan=lifespan)
     app.state.engine = engine
     app.state.scheduler = scheduler
+
+    PUBLIC = {"/manifest.json", "/static/icon.svg"}
+
+    @app.middleware("http")
+    async def basic_auth(request: Request, call_next):
+        """Пароль на панель. Задаётся переменной PANEL_PASSWORD; логин любой."""
+        if not settings.panel_password or request.url.path in PUBLIC:
+            return await call_next(request)
+        header = request.headers.get("authorization", "")
+        ok = False
+        if header.startswith("Basic "):
+            try:
+                _, _, password = base64.b64decode(header[6:]).decode("utf-8").partition(":")
+                ok = secrets.compare_digest(password, settings.panel_password)
+            except Exception:  # noqa: BLE001
+                ok = False
+        if not ok:
+            return Response("Нужен пароль", status_code=401, headers={"WWW-Authenticate": 'Basic realm="trader"'})
+        return await call_next(request)
 
     @app.get("/api/state")
     def state():

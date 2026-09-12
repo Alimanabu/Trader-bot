@@ -42,6 +42,7 @@ class Settings:
     llm_model: str = "claude-opus-5"
     db_path: str = "data/trader.db"
     port: int = 8080
+    panel_password: str = ""
     history_candles: int = 500
     bench_size: int = 3
     research_lookback: int = 720
@@ -72,6 +73,7 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         llm_model=env.get("LLM_MODEL", "claude-opus-5"),
         db_path=env.get("DB_PATH", "data/trader.db"),
         port=int(env.get("PORT", "8080")),
+        panel_password=env.get("PANEL_PASSWORD", ""),
         history_candles=int(env.get("HISTORY_CANDLES", "500")),
         bench_size=int(env.get("BENCH_SIZE", "3")),
         research_lookback=int(env.get("RESEARCH_LOOKBACK", "720")),

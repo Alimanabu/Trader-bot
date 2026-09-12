@@ -19,3 +19,17 @@ def test_api_state_and_tick(settings):
         d = c.get(f"/api/agents/{name}").json()
         assert d["agent"]["name"] == name and d["decisions"]
         assert c.get("/").status_code == 200
+
+
+def test_api_requires_password_when_set(settings, monkeypatch):
+    import base64
+    monkeypatch.setenv("PANEL_PASSWORD", "secret123")
+    eng = Engine(settings, market=SyntheticMarket(seed=5), journal=Journal(":memory:"), client=ClaudeClient(None))
+    app = create_app(engine=eng, start_scheduler=False)
+    with TestClient(app) as c:
+        assert c.get("/api/state").status_code == 401
+        assert c.get("/manifest.json").status_code == 200
+        bad = base64.b64encode(b"admin:wrong").decode()
+        assert c.get("/api/state", headers={"Authorization": f"Basic {bad}"}).status_code == 401
+        good = base64.b64encode(b"admin:secret123").decode()
+        assert c.get("/api/state", headers={"Authorization": f"Basic {good}"}).status_code == 200

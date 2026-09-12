@@ -25,7 +25,18 @@
 
 Решения принимаются раз в час, по закрытию часовой свечи.
 
-## Быстрый старт
+## Установка на сервер одной командой
+
+На сервере с Ubuntu (подойдёт самый дешёвый VPS) выполните:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Alimanabu/Trader-bot/claude/bitcoin-trading-agents-app-ihqylo/deploy.sh | bash
+```
+
+Скрипт поставит Docker, скачает код, спросит ключ Claude API и пароль для панели, запустит приложение
+и напечатает адрес панели. Повторный запуск той же команды обновляет код.
+
+## Быстрый старт (вручную)
 
 ```bash
 git clone https://github.com/Alimanabu/Trader-bot.git
@@ -66,6 +77,7 @@ python -m pytest                  # тесты
 - `MARKET_SOURCE` — `binance` (по умолчанию, с автоматическим запасным Bybit) или `bybit`.
 - `AGENT_DAILY_LOSS_LIMIT`, `AGENT_MAX_DRAWDOWN`, `DEPT_DAILY_LOSS_LIMIT` — лимиты риска.
 - `AUTO_HIRE` — нанимать замену автоматически (`true`) или спрашивать вас (`false`).
+- `PANEL_PASSWORD` — пароль на панель. Обязателен, если сервер доступен из интернета.
 - `LLM_MODEL` — модель Claude для нейро-агентов и отчётов.
 
 ## Как устроен код
