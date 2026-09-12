@@ -16,7 +16,7 @@
     const was = x.exposure_before == null ? null : Math.round(x.exposure_before * 100);
     return `<span class="dim">без сделки${was != null ? `, уже ${was}% в BTC` : ""}</span>`;
   }
-  const KIND = { fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
+  const KIND = { fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", stop: "стоп-лосс", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
 
   const TABS = ["home", "team", "interns", "lab", "reports"];
   let state = null, tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "home", equityData = null, summary = null, families = null, range = "all";
@@ -149,6 +149,7 @@
           <div><span>Смотрит на рынок</span><b class="num">${a.strategy.startsWith("llm_") ? "сам решает когда" : a.cadence_minutes >= 60 ? "раз в час" : `каждые ${a.cadence_minutes} мин`}</b></div>
           <div><span>Последняя проверка</span><b class="num">${hhmm(a.decided_at)}</b></div>
           <div><span>Следующая</span><b class="num">${hhmm(a.next_decision_ts)}${nextIn != null ? ` <span class="muted">(через ${nextIn} мин)</span>` : ""}</b></div>
+          ${a.stop_price ? `<div><span>Стоп-лосс</span><b class="num down">${fmt(a.stop_price, 0)} $</b></div>` : ""}
           ${a.alert_above || a.alert_below ? `<div><span>Будильники по цене</span><b class="num">${a.alert_above ? "выше " + fmt(a.alert_above, 0) : ""}${a.alert_above && a.alert_below ? " · " : ""}${a.alert_below ? "ниже " + fmt(a.alert_below, 0) : ""}</b></div>` : ""}
         </div>
         <div class="bar"><i style="width:${Math.round(a.exposure * 100)}%"></i></div>
@@ -176,7 +177,7 @@
     const fired = s.agents.filter((a) => a.status === "fired");
     const sorted = [...alive].sort((a, b) => b.pnl_total - a.pnl_total);
     return `<h2 class="sec">Коты · основная команда · ${alive.length} из ${s.team_size}</h2>
-      <div class="note" style="margin-bottom:8px">Каждый агент торгует своими 1000 $ по своей теории и сам решает, как часто смотреть на рынок: колонка «Ритм». Пробойные проверяют цену каждую минуту, трендовые раз в 10 минут, нейро-агенты сами назначают время следующей проверки и ставят будильники по цене. Сделка происходит только когда меняется цель.</div>
+      <div class="note" style="margin-bottom:8px">Каждый кот торгует своими 1000 $ по своей теории и сам решает, как часто смотреть на рынок: колонка «Ритм». Размер позиции считается от риска: на одной сделке кот может потерять не больше ${fmt((s.risk_per_trade || 0.01) * 100, 0)}% капитала до стоп-лосса, и никогда не держит больше ${fmt((s.max_exposure || 1) * 100, 0)}% в BTC. Стоп-лосс проверяется каждую минуту.</div>
       <div class="card list"><div class="acc-head"><span>Агент</span><span>Ритм</span><span>За 24 ч</span><span>За всё время</span><span></span></div>${sorted.map((a) => agentRow(a)).join("")}</div>
       ${fired.length ? `<h2 class="sec">Уволенные · ${fired.length}</h2><div class="card list">${fired.map((a) => agentRow(a)).join("")}</div>` : ""}`;
   }

@@ -186,3 +186,25 @@ def test_quiet_checks_are_not_logged(settings):
         eng.tick(now=T + k * 60)
     after = len(eng.j.recent_decisions(breakout.name, 500))
     assert after - before <= 3, "проверки без изменений не должны засорять журнал"
+
+
+def test_stop_loss_closes_position_and_cools_down(settings):
+    settings.intern_count = 0
+    settings.stop_cooldown_min = 30
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    a = next((x for x in eng.agents if x.account.btc > 0), None)
+    if a is None:   # на этом участке синтетики никто не купил — открываем позицию вручную
+        a = eng.agents[0]
+        t = a.account.rebalance(0.25, eng.last_price, T, "тест")
+        eng._after_trade(a, t, eng.last_price, eng._atr_pct(eng.last_candles))
+    assert a.stop_price > 0 and a.stop_price < eng.last_price
+    # цена «падает» ниже стопа: подменяем котировку
+    eng.market.price = lambda symbol: a.stop_price * 0.99
+    res = eng.tick(now=T + 60)
+    assert a.name in res["stops"]
+    assert a.account.btc == 0 and a.stop_price == 0
+    assert a.next_check_ts >= T + 60 + 30 * 60
+    assert any(e["kind"] == "stop" for e in eng.j.recent_events(50))

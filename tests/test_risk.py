@@ -33,11 +33,22 @@ def test_drawdown_fires():
     assert v.fire
 
 
-def test_exposure_clamped():
-    rm = RiskManager(Settings())
+def test_exposure_sized_by_risk_and_capped():
+    s = Settings(agent_max_exposure=0.25, risk_per_trade=0.01, stop_atr_mult=2.0)
+    rm = RiskManager(s)
     a = make_agent()
-    v = rm.check_agent(a, Signal(Action.BUY, 3.0, 1.0, "x"), 100.0)
-    assert v.allowed and v.target_exposure == 1.0
+    # ATR 1% → стоп 2% → по риску 50%, потолок 25%
+    v = rm.check_agent(a, Signal(Action.BUY, 1.0, 1.0, "x"), 100.0, atr_pct=0.01)
+    assert v.allowed and abs(v.target_exposure - 0.25) < 1e-9
+    # ATR 5% → стоп 10% → по риску 10%, потолок не мешает
+    v = rm.check_agent(a, Signal(Action.BUY, 1.0, 1.0, "x"), 100.0, atr_pct=0.05)
+    assert abs(v.target_exposure - 0.10) < 1e-9
+    # стратегия хочет половину → половина от размера по риску
+    v = rm.check_agent(a, Signal(Action.HOLD, 0.5, 1.0, "x"), 100.0, atr_pct=0.05)
+    assert abs(v.target_exposure - 0.05) < 1e-9
+    # буквальный потолок 10%
+    rm2 = RiskManager(Settings(agent_max_exposure=0.10, risk_per_trade=0.5))
+    assert rm2.check_agent(a, Signal(Action.BUY, 1.0, 1.0, "x"), 100.0, atr_pct=0.01).target_exposure == 0.10
 
 
 def test_department_halt():

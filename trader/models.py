@@ -76,3 +76,4 @@ class AgentSnapshot:
     cadence_minutes: int = 0
     alert_above: float = 0.0
     alert_below: float = 0.0
+    stop_price: float = 0.0

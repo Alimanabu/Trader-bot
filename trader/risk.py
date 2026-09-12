@@ -29,6 +29,17 @@ class RiskManager:
         self.s = settings
         self.dept_halted_day: str = ""
 
+    def stop_distance(self, atr_pct: float) -> float:
+        """Расстояние стопа от входа в долях цены. Не меньше 0.5%, не больше 10%."""
+        return min(0.10, max(0.005, self.s.stop_atr_mult * atr_pct))
+
+    def size(self, desired: float, atr_pct: float) -> float:
+        """Размер позиции: желание стратегии × доля, при которой потеря до стопа = risk_per_trade,
+        и не больше потолка agent_max_exposure."""
+        dist = self.stop_distance(atr_pct)
+        by_risk = self.s.risk_per_trade / dist if dist > 0 else 1.0
+        return max(0.0, min(self.s.agent_max_exposure, desired * min(1.0, by_risk)))
+
     def check_department(self, agents: list[Agent], price: float, day_key: str) -> tuple[bool, str]:
         active = [a for a in agents if a.status in {"active", "paused"}]
         if not active:
@@ -42,9 +53,9 @@ class RiskManager:
             return False, f"дневной убыток отдела {((day_start-now)/day_start)*100:.2f}% ≥ лимита {self.s.dept_daily_loss_limit*100:.1f}%"
         return True, ""
 
-    def check_agent(self, agent: Agent, signal: Signal, price: float) -> RiskVerdict:
+    def check_agent(self, agent: Agent, signal: Signal, price: float, atr_pct: float = 0.01) -> RiskVerdict:
         eq = agent.equity(price)
-        target = min(self.s.agent_max_exposure, max(0.0, signal.target_exposure))
+        target = self.size(max(0.0, signal.target_exposure), atr_pct)
         if agent.status == "fired":
             return RiskVerdict(False, 0.0, "агент уволен", fire=False)
         dd = agent.drawdown(price)
@@ -56,6 +67,6 @@ class RiskManager:
                 return RiskVerdict(False, 0.0, f"дневной убыток {day_loss*100:.2f}% ≥ лимита {self.s.agent_daily_loss_limit*100:.1f}%: пауза до конца дня", pause=True)
         if agent.status == "paused":
             return RiskVerdict(False, 0.0, "агент на паузе до конца дня")
-        if target != signal.target_exposure:
-            return RiskVerdict(True, target, f"доля ограничена потолком {self.s.agent_max_exposure:.0%}")
+        if abs(target - signal.target_exposure) > 1e-9:
+            return RiskVerdict(True, target, f"размер по риску: {target:.0%} (стоп {self.stop_distance(atr_pct)*100:.1f}%)")
         return RiskVerdict(True, target, "ok")

@@ -67,6 +67,7 @@ class Agent:
     alert_below: float = 0.0     # «разбуди, если цена ниже»
     last_logged_ts: int = 0
     last_target: float = -1.0
+    stop_price: float = 0.0      # стоп-лосс текущей позиции (0 = нет позиции)
 
     def start_balance(self) -> float:
         return self._start_balance
@@ -153,6 +154,7 @@ class Agent:
             cadence_minutes=self.strategy.cadence_minutes(),
             alert_above=self.alert_above,
             alert_below=self.alert_below,
+            stop_price=self.stop_price,
         )
 
 

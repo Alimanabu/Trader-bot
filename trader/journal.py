@@ -80,7 +80,7 @@ class Journal:
         cols = {r[1] for r in self._conn.execute("PRAGMA table_info(agents)").fetchall()}
         for col, ddl in (("last_decided_ts", "INTEGER NOT NULL DEFAULT 0"), ("slot_minute", "INTEGER NOT NULL DEFAULT 0"),
                          ("next_check_ts", "INTEGER NOT NULL DEFAULT 0"), ("alert_above", "REAL NOT NULL DEFAULT 0"),
-                         ("alert_below", "REAL NOT NULL DEFAULT 0")):
+                         ("alert_below", "REAL NOT NULL DEFAULT 0"), ("stop_price", "REAL NOT NULL DEFAULT 0")):
             if col not in cols:
                 self._conn.execute(f"ALTER TABLE agents ADD COLUMN {col} {ddl}")
         dcols = {r[1] for r in self._conn.execute("PRAGMA table_info(decisions)").fetchall()}
@@ -235,18 +235,18 @@ class Journal:
     def save_agent(self, a) -> None:
         self._exec(
             "INSERT INTO agents(name,strategy,params,status,hired_at,cash,btc,peak_equity,day_start_equity,day_key,"
-            "start_balance,realized_pnl,avg_entry,notes,last_decided_ts,slot_minute,next_check_ts,alert_above,alert_below)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "start_balance,realized_pnl,avg_entry,notes,last_decided_ts,slot_minute,next_check_ts,alert_above,alert_below,stop_price)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(name) DO UPDATE SET strategy=excluded.strategy, params=excluded.params, status=excluded.status,"
             " hired_at=excluded.hired_at, cash=excluded.cash, btc=excluded.btc, peak_equity=excluded.peak_equity,"
             " day_start_equity=excluded.day_start_equity, day_key=excluded.day_key, start_balance=excluded.start_balance,"
             " realized_pnl=excluded.realized_pnl, avg_entry=excluded.avg_entry, notes=excluded.notes,"
             " last_decided_ts=excluded.last_decided_ts, slot_minute=excluded.slot_minute, next_check_ts=excluded.next_check_ts,"
-            " alert_above=excluded.alert_above, alert_below=excluded.alert_below",
+            " alert_above=excluded.alert_above, alert_below=excluded.alert_below, stop_price=excluded.stop_price",
             (a.name, a.strategy.family, json.dumps(a.strategy.params), a.status, a.hired_at, a.account.cash,
              a.account.btc, a.peak_equity, a.day_start_equity, a.day_key, a.start_balance(),
              a.account.realized_pnl, a.account._avg_entry, json.dumps(a.notes, ensure_ascii=False),
-             a.last_decided_ts, a.slot_minute, a.next_check_ts, a.alert_above, a.alert_below))
+             a.last_decided_ts, a.slot_minute, a.next_check_ts, a.alert_above, a.alert_below, a.stop_price))
 
     def mark_fired(self, name: str, ts: int) -> None:
         self._exec("UPDATE agents SET status='fired', fired_at=? WHERE name=?", (ts, name))

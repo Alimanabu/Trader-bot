@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from .agents.base import Agent
 from .agents.registry import DEFAULT_NAMES, build_strategy, default_department, new_account
+from .data import indicators as ind
 from .config import Settings
 from .data.market import MarketData, get_market
 from .journal import Journal
@@ -73,7 +74,8 @@ class Engine:
                       peak_equity=r["peak_equity"], day_start_equity=r["day_start_equity"], day_key=r["day_key"],
                       notes=json.loads(r["notes"] or "[]"), last_decided_ts=int(r.get("last_decided_ts") or 0),
                       slot_minute=int(r.get("slot_minute") or 0), next_check_ts=int(r.get("next_check_ts") or 0),
-                      alert_above=float(r.get("alert_above") or 0), alert_below=float(r.get("alert_below") or 0))
+                      alert_above=float(r.get("alert_above") or 0), alert_below=float(r.get("alert_below") or 0),
+                      stop_price=float(r.get("stop_price") or 0))
             a._start_balance = r["start_balance"]
             a.last_price = self.last_price
             self.agents.append(a)
@@ -128,6 +130,39 @@ class Engine:
         else:
             minutes = max(1, int(a.strategy.cadence_minutes()))
         a.next_check_ts = now_i + minutes * 60
+
+    def _atr_pct(self, candles: list[Candle]) -> float:
+        tail = candles[-60:]
+        if len(tail) < 20:
+            return 0.01
+        a = ind.atr([c.high for c in tail], [c.low for c in tail], [c.close for c in tail], 14)[-1]
+        return (a / tail[-1].close) if a and tail[-1].close else 0.01
+
+    def _after_trade(self, a: Agent, trade, price: float, atr_pct: float) -> None:
+        """После сделки: выставить или снять стоп-лосс."""
+        if a.account.btc <= 0:
+            a.stop_price = 0.0
+        elif trade is not None and trade.side == "BUY":
+            entry = a.account._avg_entry or price
+            a.stop_price = entry * (1 - self.risk.stop_distance(atr_pct))
+
+    def _check_stops(self, alive: list[Agent], price: float, now_i: int) -> list[str]:
+        """Каждую минуту: если цена ушла ниже стопа, закрыть позицию и дать агенту паузу перед новым входом."""
+        hit = []
+        for a in alive:
+            if a.account.btc > 0 and a.stop_price and price <= a.stop_price:
+                t = a.account.flatten(price, now_i, f"стоп-лосс {a.stop_price:.0f}")
+                if t:
+                    self.j.trade(t)
+                    self.j.decision(now_i, a.name, a.strategy.family, "SELL", 0.0, 1.0, f"стоп-лосс: цена {price:.0f} ниже {a.stop_price:.0f}",
+                                    price, a.equity(price), True, None, trade=t, exposure_before=a.account.exposure(price))
+                    self.j.equity(now_i, a.name, a.equity(price), price)
+                    self.j.event("stop", f"{a.name}: сработал стоп-лосс на {a.stop_price:.0f}", a.name, ts=now_i)
+                    hit.append(a.name)
+                a.stop_price = 0.0
+                a.last_target = 0.0
+                a.next_check_ts = max(a.next_check_ts, now_i + self.s.stop_cooldown_min * 60)
+        return hit
 
     def _view(self, candles: list[Candle], price: float, now_i: int) -> list[Candle]:
         """Закрытые свечи плюс формирующаяся, доведённая до текущей цены."""
@@ -202,6 +237,8 @@ class Engine:
                 self.j.event("halt", f"Отдел остановлен: {why}", None, ts=now_i)
             summary["halt"] = why
 
+        atr_pct = self._atr_pct(candles)
+        summary["stops"] = self._check_stops(alive, price, now_i)
         view = None
         for a in alive:
             due, why_due = self._is_due(a, now_i, price, force)
@@ -211,9 +248,9 @@ class Engine:
                 view = self._view(candles, price, now_i)
             a.last_decided_ts = now_i
             if is_intern(a):
-                self._intern_step(a, view, price, now_i)
+                self._intern_step(a, view, price, now_i, atr_pct)
             elif is_team(a) and ok:
-                summary["decisions"].append(self._agent_step(a, view, price, now_i, why_due))
+                summary["decisions"].append(self._agent_step(a, view, price, now_i, why_due, atr_pct))
                 if a.status == "fired":
                     summary["fired"].append(a.name)
             else:
@@ -247,7 +284,7 @@ class Engine:
             return True
         return now_i - a.last_logged_ts >= 3600
 
-    def _intern_step(self, a: Agent, candles: list[Candle], price: float, ts: int) -> None:
+    def _intern_step(self, a: Agent, candles: list[Candle], price: float, ts: int, atr_pct: float = 0.01) -> None:
         ctx = {"exposure": a.account.exposure(price), "bars_in_position": a.bars_in_position}
         try:
             sig = a.strategy.decide(candles, ctx)
@@ -259,9 +296,11 @@ class Engine:
             self.head.drop_intern(a, price, ts, f"просадка {a.drawdown(price)*100:.1f}%")
             return
         exp_before = a.account.exposure(price)
-        t = a.account.rebalance(min(self.s.agent_max_exposure, sig.target_exposure), price, ts, sig.reason)
+        sized = self.risk.size(sig.target_exposure, atr_pct)
+        t = a.account.rebalance(sized, price, ts, sig.reason)
         if t:
             self.j.trade(t)
+        self._after_trade(a, t, price, atr_pct)
         eq = a.equity(price)
         if self._should_log(a, sig, t, ts):
             self.j.decision(ts, a.name, a.strategy.family, sig.action.value, sig.target_exposure, sig.confidence,
@@ -274,7 +313,7 @@ class Engine:
         if t:
             a.after_trade_tick(price)
 
-    def _agent_step(self, a: Agent, candles: list[Candle], price: float, ts: int, why_due: str = "") -> dict:
+    def _agent_step(self, a: Agent, candles: list[Candle], price: float, ts: int, why_due: str = "", atr_pct: float = 0.01) -> dict:
         ctx = {"exposure": a.account.exposure(price), "lessons": a.notes, "bars_in_position": a.bars_in_position,
                "llm_min_interval": self.s.llm_min_interval_min, "llm_max_interval": self.s.llm_max_interval_min, "woke_by": why_due}
         try:
@@ -284,7 +323,7 @@ class Engine:
             from .agents.base import hold
             sig = hold(f"ошибка стратегии: {e}", ctx["exposure"])
         a.last_signal = sig
-        verdict = self.risk.check_agent(a, sig, price)
+        verdict = self.risk.check_agent(a, sig, price, atr_pct)
         executed = False
         blocked = None
         trade = None
@@ -303,13 +342,17 @@ class Engine:
             trade = a.account.rebalance(verdict.target_exposure, price, ts, sig.reason)
             if trade:
                 self.j.trade(trade)
+            self._after_trade(a, trade, price, atr_pct)
             executed = True
         else:
             blocked = verdict.reason
         eq = a.equity(price)
+        reason = sig.reason
+        if verdict.allowed and abs(verdict.target_exposure - sig.target_exposure) > 1e-9 and sig.target_exposure > 0:
+            reason = f"{sig.reason} · {verdict.reason}"
         if blocked or self._should_log(a, sig, trade, ts):
             self.j.decision(ts, a.name, a.strategy.family, sig.action.value, sig.target_exposure, sig.confidence,
-                            sig.reason, price, eq, executed, blocked, trade=trade, exposure_before=exp_before)
+                            reason, price, eq, executed, blocked, trade=trade, exposure_before=exp_before)
             if a.status != "fired":
                 self.j.equity(ts, a.name, eq, price)
             a.last_logged_ts = ts
@@ -375,6 +418,7 @@ class Engine:
             "trades_24h": self._trades_24h(now_i),
             "last_poll_ts": self.last_poll_ts,
             "max_exposure": self.s.agent_max_exposure,
+            "risk_per_trade": self.s.risk_per_trade,
         }
 
     def _trades_24h(self, now_i: int) -> list[dict]:
