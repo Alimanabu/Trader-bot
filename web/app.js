@@ -67,6 +67,7 @@
       <div class="label">Капитал отдела · демосчёт</div>
       <div class="big num">${fmt(d.equity)} <small>$</small></div>
       <div class="sub num">BTC ${fmt(s.price, 0)} $ · ${team.length} из ${s.team_size} агентов · ${s.interns.length} стажёров</div>
+      <div class="sub num">Нейросеть: ${s.llm ? `${esc(s.llm_model)} · сегодня ${fmt(s.llm_spend?.usd ?? 0, 2)} $ из ${fmt(s.llm_spend?.budget ?? 0, 2)} $ (${s.llm_spend?.calls ?? 0} вызовов)` : "нет ключа, 3 агента ждут"}</div>
       <div class="sub" id="clock"></div>
       <div class="delta num ${cls(day)}">${sign(day)} $ <span>за сегодня</span></div>
       <div class="delta num ${cls(d.pnl)}">${sign(d.pnl)} $ (${sign(pct, 2)}%) <span>за всё время</span></div>

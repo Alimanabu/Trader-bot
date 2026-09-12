@@ -37,9 +37,10 @@ def test_tick_records_decisions_and_skips_duplicate(settings):
     assert again.get("skipped")
     market.advance(1)
     res2 = eng.tick(now=T + 3600)
-    assert res2["ok"] and not res2.get("skipped") and len(res2["decisions"]) == 11
+    # новостник с веб-поиском проверяет рынок не чаще раза в 4 часа, остальные десять успели
+    assert res2["ok"] and not res2.get("skipped") and len(res2["decisions"]) == 10
     team_decisions = [d for d in eng.j.recent_decisions(None, 500) if d["agent"] in {a.name for a in eng.agents if a.status == "active"}]
-    assert len(team_decisions) == 22    # первый проход + часовая контрольная запись
+    assert len(team_decisions) == 21    # первый проход + часовая контрольная запись
 
 
 def test_state_persists_between_engines(settings):

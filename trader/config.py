@@ -47,8 +47,10 @@ class Settings:
     bench_size: int = 30
     team_size: int = 11
     intern_count: int = 20
-    llm_min_interval_min: int = 15     # нейро-агент не может просить будить себя чаще (защита от расходов)
+    llm_min_interval_min: int = 60     # нейро-агент не может просить будить себя чаще (защита от расходов)
     llm_max_interval_min: int = 360
+    llm_news_min_interval_min: int = 240   # новостник с веб-поиском дороже, поэтому реже
+    llm_daily_budget_usd: float = 2.0      # жёсткий потолок расходов на нейросеть в сутки
     research_lookback: int = 720
     retune_every_hours: int = 168
     extra: dict = field(default_factory=dict)
@@ -82,8 +84,10 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         bench_size=int(env.get("BENCH_SIZE", "30")),
         team_size=int(env.get("TEAM_SIZE", "11")),
         intern_count=int(env.get("INTERN_COUNT", "20")),
-        llm_min_interval_min=int(env.get("LLM_MIN_INTERVAL_MIN", "15")),
+        llm_min_interval_min=int(env.get("LLM_MIN_INTERVAL_MIN", "60")),
         llm_max_interval_min=int(env.get("LLM_MAX_INTERVAL_MIN", "360")),
+        llm_news_min_interval_min=int(env.get("LLM_NEWS_MIN_INTERVAL_MIN", "240")),
+        llm_daily_budget_usd=float(env.get("LLM_DAILY_BUDGET_USD", "2.0")),
         research_lookback=int(env.get("RESEARCH_LOOKBACK", "720")),
         retune_every_hours=int(env.get("RETUNE_EVERY_HOURS", "168")),
     )

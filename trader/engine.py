@@ -37,7 +37,10 @@ class Engine:
         self.s = settings
         self.market = market or get_market(settings.market_source)
         self.j = journal or Journal(settings.db_path)
-        self.client = client if client is not None else ClaudeClient(settings.anthropic_api_key, settings.llm_model)
+        self.client = client if client is not None else ClaudeClient(
+            settings.anthropic_api_key, settings.llm_model, daily_budget_usd=settings.llm_daily_budget_usd, spend_store=self.j)
+        if self.client and self.client.spend_store is None:
+            self.client.spend_store = self.j
         self.risk = RiskManager(settings)
         self.head = DepartmentHead(settings, self.j, self.client)
         self.learner = Learner(settings, self.j, self.client)
@@ -115,7 +118,10 @@ class Engine:
         """Агент сам говорит, когда смотреть на рынок в следующий раз."""
         if a.strategy.uses_llm():
             minutes = int((sig.meta or {}).get("next_check_minutes") or a.strategy.cadence_minutes())
-            minutes = max(self.s.llm_min_interval_min, min(self.s.llm_max_interval_min, minutes))
+            floor_min = self.s.llm_min_interval_min
+            if a.strategy.family == "llm_news":
+                floor_min = max(floor_min, self.s.llm_news_min_interval_min)
+            minutes = max(floor_min, min(self.s.llm_max_interval_min, minutes))
             a.alert_above = float((sig.meta or {}).get("wake_if_above") or 0)
             a.alert_below = float((sig.meta or {}).get("wake_if_below") or 0)
         else:
@@ -349,6 +355,8 @@ class Engine:
             "market": getattr(self.market, "name", "?"),
             "mode": "paper",
             "llm": self.client.enabled if self.client else False,
+            "llm_spend": self.client.spend_today() if self.client else None,
+            "llm_model": self.s.llm_model,
             "error": self.last_error,
             "department": {"equity": round(total, 2), "start": round(start, 2), "pnl": round(total - start, 2),
                            "agents_active": len([s for s in alive if s["status"] == "active"]),
