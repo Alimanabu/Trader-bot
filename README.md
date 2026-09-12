@@ -44,7 +44,7 @@ GitHub Actions при каждом изменении в `android/` и публ�
 
 https://github.com/Alimanabu/Trader-bot/releases/tag/android-latest
 
-Установка: скачать `trader-department.apk` на телефон, разрешить установку из этого источника,
+Установка: скачать `crazycats.apk` на телефон, разрешить установку из этого источника,
 при первом запуске ввести адрес панели (`http://IP:8080`) и пароль.
 
 Ключ подписи `android/keystore.jks` лежит в репозитории и годится только для личной установки.

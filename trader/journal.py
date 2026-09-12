@@ -164,6 +164,28 @@ class Journal:
     def trades_for(self, agent: str) -> list[dict]:
         return self._rows("SELECT * FROM trades WHERE agent=? ORDER BY id", (agent,))
 
+    def backfill_trade_pnl(self, fee_rate: float = 0.001) -> int:
+        """Дописать итог (pnl, cost) продажам, записанным до появления этих полей."""
+        missing = self._rows("SELECT DISTINCT agent FROM trades WHERE side='SELL' AND pnl IS NULL")
+        fixed = 0
+        for r in missing:
+            qty_held, avg = 0.0, 0.0
+            for t in self._rows("SELECT id, side, price, qty, fee, pnl FROM trades WHERE agent=? ORDER BY id", (r["agent"],)):
+                if t["side"] == "BUY":
+                    total = avg * qty_held + t["price"] * t["qty"] + (t["fee"] or 0.0)
+                    qty_held += t["qty"]
+                    avg = total / qty_held if qty_held else 0.0
+                else:
+                    q = min(t["qty"], qty_held) if qty_held else t["qty"]
+                    if t["pnl"] is None:
+                        pnl = (t["price"] - avg) * q - (t["fee"] or 0.0)
+                        self._exec("UPDATE trades SET pnl=?, cost=? WHERE id=?", (pnl, avg * q, t["id"]))
+                        fixed += 1
+                    qty_held = max(0.0, qty_held - t["qty"])
+                    if qty_held < 1e-12:
+                        qty_held, avg = 0.0, 0.0
+        return fixed
+
     def trades_since(self, ts: int, limit: int = 200) -> list[dict]:
         return self._rows("SELECT * FROM trades WHERE ts>=? ORDER BY id DESC LIMIT ?", (ts, limit))
 

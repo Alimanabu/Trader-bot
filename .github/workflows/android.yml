@@ -36,21 +36,22 @@ jobs:
         run: gradle --no-daemon assembleRelease
 
       - name: Rename APK
-        run: cp android/app/build/outputs/apk/release/app-release.apk trader-department.apk
+        run: cp android/app/build/outputs/apk/release/app-release.apk crazycats.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: trader-department-apk
-          path: trader-department.apk
+          name: crazycats-apk
+          path: crazycats.apk
 
       - name: Publish release "android-latest"
         uses: softprops/action-gh-release@v2
         with:
           tag_name: android-latest
-          name: Отдел BTC-агентов · Android
+          name: CrazyCats · Android
           body: |
-            Приложение для телефона. Скачайте trader-department.apk, откройте на Android и разрешите установку.
+            Приложение CrazyCats для телефона. Скачайте crazycats.apk, откройте на Android и разрешите установку.
+            Если раньше стояла старая версия «Отдел BTC», сначала удалите её.
             При первом запуске введите адрес панели (например http://2.28.234.131:8080) и пароль.
-            Сборка №${{ github.run_number }}.
-          files: trader-department.apk
+            Версия 1.0.${{ github.run_number }}.
+          files: crazycats.apk
           prerelease: false

@@ -208,3 +208,14 @@ def test_stop_loss_closes_position_and_cools_down(settings):
     assert a.account.btc == 0 and a.stop_price == 0
     assert a.next_check_ts >= T + 60 + 30 * 60
     assert any(e["kind"] == "stop" for e in eng.j.recent_events(50))
+
+
+def test_backfill_sell_pnl_for_old_trades():
+    from trader.models import Trade
+    j = Journal(":memory:")
+    j.trade(Trade(1, "x", "BUY", 100.0, 1.0, 0.1, "b"))
+    j.trade(Trade(2, "x", "SELL", 110.0, 1.0, 0.11, "s"))   # без pnl, как старые записи
+    assert j.recent_trades(5)[0]["pnl"] is None
+    assert j.backfill_trade_pnl() == 1
+    t = j.recent_trades(5)[0]
+    assert abs(t["pnl"] - (110.0 - 100.1 - 0.11)) < 1e-9 and abs(t["cost"] - 100.1) < 1e-9

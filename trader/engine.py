@@ -52,6 +52,9 @@ class Engine:
         self.last_poll_ts: int = 0
         self.last_error: str = ""
         self._load()
+        n = self.j.backfill_trade_pnl(settings.fee_rate)
+        if n:
+            log.info("дописан итог %d старым продажам", n)
 
     # --- состояние ---
     def _load(self) -> None:

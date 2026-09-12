@@ -78,7 +78,7 @@
     const who = `<b>${esc(t.agent)}</b>${t.kind === "intern" ? ' <span class="dim">(котёнок)</span>' : ""}`;
     const stop = /стоп-лосс/i.test(t.reason || "") ? ' <span class="tag sell">стоп-лосс</span>' : "";
     if (t.side === "BUY") return `<li><time>${hhmm(t.ts)}</time><span>${who} <span class="up">купил</span> <span class="num">${btc(t.qty)}</span> по <span class="num">${fmt(t.price, 0)} $</span></span></li>`;
-    const res = t.pnl == null ? "" : ` · итог <b class="num ${cls(t.pnl)}">${sign(t.pnl)} $ (${sign(t.pnl_pct, 2)}%)</b>`;
+    const res = t.pnl == null ? ' · <span class="dim">итог не записан</span>' : ` · итог <b class="num ${cls(t.pnl)}">${sign(t.pnl)} $${t.pnl_pct != null ? ` (${sign(t.pnl_pct, 2)}%)` : ""}</b>`;
     return `<li><time>${hhmm(t.ts)}</time><span>${who} <span class="down">продал</span> <span class="num">${btc(t.qty)}</span> по <span class="num">${fmt(t.price, 0)} $</span>${res}${stop}</span></li>`;
   }
   function tradesHTML(s) {
