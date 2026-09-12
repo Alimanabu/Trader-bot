@@ -8,3 +8,8 @@ data/*.db-journal
 dist/
 build/
 *.egg-info/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+    <EditText android:id="@+id/url" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="@string/setup_hint_url" android:inputType="textUri" android:textColor="@color/text" android:textColorHint="@color/muted"/>
+    <EditText android:id="@+id/password" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="@string/setup_hint_password" android:inputType="textPassword" android:textColor="@color/text" android:textColorHint="@color/muted" android:layout_marginTop="10dp"/>
+</LinearLayout>
