@@ -51,7 +51,8 @@ class PaperAccount:
             return None
         qty = usd / fill
         fee = usd * self.fee_rate
-        total_cost = self._avg_entry * self.btc + fill * qty
+        # в цену входа включаем комиссию покупки, чтобы итог продажи был честным результатом всего круга
+        total_cost = self._avg_entry * self.btc + fill * qty + fee
         self.btc += qty
         self._avg_entry = total_cost / self.btc if self.btc else 0.0
         self.cash -= usd + fee
@@ -68,13 +69,15 @@ class PaperAccount:
             return None
         proceeds = qty * fill
         fee = proceeds * self.fee_rate
-        self.realized_pnl += (fill - self._avg_entry) * qty - fee
+        pnl = (fill - self._avg_entry) * qty - fee
+        cost = self._avg_entry * qty
+        self.realized_pnl += pnl
         self.btc -= qty
         if self.btc < 1e-12:
             self.btc = 0.0
             self._avg_entry = 0.0
         self.cash += proceeds - fee
-        t = Trade(ts, self.owner, "SELL", fill, qty, fee, reason)
+        t = Trade(ts, self.owner, "SELL", fill, qty, fee, reason, pnl=pnl, cost=cost)
         self.trades.append(t)
         return t
 

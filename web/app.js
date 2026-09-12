@@ -72,31 +72,38 @@
     </section>`;
   }
 
-  // ---------- лог сделок за 24 часа ----------
+  // ---------- лог сделок за 24 часа (текстом) ----------
+  const btc = (q) => Number(q).toLocaleString("ru-RU", { minimumFractionDigits: 5, maximumFractionDigits: 5 }) + " BTC";
+  function tradeLine(t) {
+    const who = `<b>${esc(t.agent)}</b>${t.kind === "intern" ? ' <span class="dim">(котёнок)</span>' : ""}`;
+    const stop = /стоп-лосс/i.test(t.reason || "") ? ' <span class="tag sell">стоп-лосс</span>' : "";
+    if (t.side === "BUY") return `<li><time>${hhmm(t.ts)}</time><span>${who} <span class="up">купил</span> <span class="num">${btc(t.qty)}</span> по <span class="num">${fmt(t.price, 0)} $</span></span></li>`;
+    const res = t.pnl == null ? "" : ` · итог <b class="num ${cls(t.pnl)}">${sign(t.pnl)} $ (${sign(t.pnl_pct, 2)}%)</b>`;
+    return `<li><time>${hhmm(t.ts)}</time><span>${who} <span class="down">продал</span> <span class="num">${btc(t.qty)}</span> по <span class="num">${fmt(t.price, 0)} $</span>${res}${stop}</span></li>`;
+  }
   function tradesHTML(s) {
     const all = s.trades_24h || [];
     const list = showInternTrades ? all : all.filter((t) => t.kind !== "intern");
     const buys = list.filter((t) => t.side === "BUY").length, sells = list.length - buys;
-    const rows = list.slice(0, 40).map((t) => `<li class="trade ${t.side === "BUY" ? "buy" : "sell"}" data-name="${esc(t.agent)}">
-        ${catSVG(t.agent, t.kind, 34)}
-        <div class="tinfo"><b>${esc(t.agent)}</b><span class="muted">${t.kind === "intern" ? "котёнок · " : ""}${esc(t.reason || "")}</span></div>
-        <div class="tsum num"><b class="${t.side === "BUY" ? "up" : "down"}">${t.side === "BUY" ? "купил" : "продал"} ${fmt(t.usd, 0)} $</b><span class="muted">${fmt(t.qty, 5)} BTC по ${fmt(t.price, 0)}</span><time>${hhmm(t.ts)}</time></div>
-      </li>`).join("");
-    return `<div class="card fade"><div class="cardhead"><h3>Сделки за 24 часа <span class="muted">· ${list.length}: ${buys} покупок, ${sells} продаж</span></h3>
-        <label class="toggle"><input type="checkbox" id="toggle-interns" ${showInternTrades ? "checked" : ""}> котята</label></div>
-      ${rows ? `<ul class="trades">${rows}</ul>` : `<div class="note">За последние сутки сделок не было: коты ждут сигнала.</div>`}</div>`;
+    const closed = list.filter((t) => t.side === "SELL" && t.pnl != null);
+    const total = closed.reduce((x, t) => x + t.pnl, 0);
+    const wins = closed.filter((t) => t.pnl > 0).length;
+    return `<div class="card fade"><div class="cardhead"><h3>Сделки за 24 часа</h3>
+        <label class="toggle"><input type="checkbox" id="toggle-interns" ${showInternTrades ? "checked" : ""}> показывать котят</label></div>
+      <div class="note num">${list.length ? `${buys} покупок · ${sells} продаж${closed.length ? ` · закрыто ${closed.length}, в плюсе ${wins} · итог закрытых <b class="${cls(total)}">${sign(total)} $</b>` : ""}` : "за последние сутки сделок не было: коты ждут сигнала"}</div>
+      ${list.length ? `<ul class="tlog">${list.slice(0, 60).map(tradeLine).join("")}</ul>` : ""}</div>`;
   }
 
   function allocHTML(s) {
     const team = s.agents.filter((a) => a.status !== "fired");
-    const btc = team.reduce((x, a) => x + a.equity * a.exposure, 0);
+    const btcv = team.reduce((x, a) => x + a.equity * a.exposure, 0);
     const total = team.reduce((x, a) => x + a.equity, 0) || 1;
-    const usdt = total - btc;
-    const r = 52, c = 2 * Math.PI * r, pb = btc / total;
+    const usdt = total - btcv;
+    const r = 52, c = 2 * Math.PI * r, pb = btcv / total;
     const rows = [...team].sort((a, b) => b.equity - a.equity).map((a) => `
-      <div class="row link" data-name="${esc(a.name)}"><i style="background:${a.exposure > 0.5 ? "var(--btc)" : "var(--usdt)"}"></i>
+      <div class="row link" data-name="${esc(a.name)}"><i style="background:${a.exposure > 0 ? "var(--btc)" : "var(--usdt)"}"></i>
         <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.name)}</span>
-        <b class="num">${fmt(a.equity, 0)} $</b><span class="pct num">${fmt((a.equity / total) * 100, 1)}%</span></div>`).join("");
+        <b class="num">${fmt(a.equity, 0)} $</b><span class="pct num">${fmt(a.exposure * 100, 0)}% в BTC</span></div>`).join("");
     return `<div class="card fade"><h3>Распределение капитала</h3>
       <div class="alloc">
         <svg viewBox="0 0 130 130" role="img" aria-label="Доля BTC и USDT">
@@ -106,9 +113,9 @@
           <text x="65" y="78" text-anchor="middle" fill="var(--muted)" font-size="10">в BTC</text>
         </svg>
         <div class="rows">
-          <div class="row"><i style="background:var(--btc)"></i><span>В биткоине</span><b class="num">${fmt(btc, 0)} $</b><span class="pct num">${fmt(pb * 100, 1)}%</span></div>
+          <div class="row"><i style="background:var(--btc)"></i><span>В биткоине</span><b class="num">${fmt(btcv, 0)} $</b><span class="pct num">${fmt(pb * 100, 1)}%</span></div>
           <div class="row"><i style="background:var(--usdt)"></i><span>В долларах (USDT)</span><b class="num">${fmt(usdt, 0)} $</b><span class="pct num">${fmt((1 - pb) * 100, 1)}%</span></div>
-          <div class="note" style="margin-top:4px">По агентам (точка оранжевая, если агент больше чем наполовину в BTC):</div>
+          <div class="note" style="margin-top:4px">По котам (оранжевая точка: сейчас держит BTC):</div>
           ${rows}
         </div></div></div>`;
   }

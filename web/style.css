@@ -174,3 +174,10 @@ details.acc[open] .acc-arrow { transform: rotate(90deg); }
 .trade .tsum time { color: var(--dim); font-size: 11px; }
 .trade.buy .cat { box-shadow: 0 0 0 2px rgba(52,210,123,.45); }
 .trade.sell .cat { box-shadow: 0 0 0 2px rgba(255,107,107,.45); }
+
+/* текстовый лог сделок */
+.tlog { list-style: none; margin: 8px 0 0; padding: 0; font-size: 13px; }
+.tlog li { display: grid; grid-template-columns: 44px 1fr; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); line-height: 1.4; }
+.tlog li:last-child { border-bottom: 0; }
+.tlog time { color: var(--muted); font-size: 12px; padding-top: 1px; }
+.tlog b { font-weight: 600; }

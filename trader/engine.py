@@ -68,7 +68,8 @@ class Engine:
                                slippage_rate=self.s.slippage_rate)
             acc.realized_pnl = r["realized_pnl"]
             acc._avg_entry = r["avg_entry"]
-            acc.trades = [Trade(t["ts"], t["agent"], t["side"], t["price"], t["qty"], t["fee"], t["reason"] or "")
+            acc.trades = [Trade(t["ts"], t["agent"], t["side"], t["price"], t["qty"], t["fee"], t["reason"] or "",
+                                pnl=t.get("pnl"), cost=t.get("cost"))
                           for t in self.j.trades_for(r["name"])]
             a = Agent(name=r["name"], strategy=strat, account=acc, status=r["status"], hired_at=r["hired_at"],
                       peak_equity=r["peak_equity"], day_start_equity=r["day_start_equity"], day_key=r["day_key"],
@@ -427,6 +428,7 @@ class Engine:
         for t in self.j.trades_since(now_i - 86400, 200):
             t["kind"] = kinds.get(t["agent"], "team")
             t["usd"] = round(t["price"] * t["qty"], 2)
+            t["pnl_pct"] = round(t["pnl"] / t["cost"] * 100, 2) if t.get("pnl") is not None and t.get("cost") else None
             out.append(t)
         return out
 

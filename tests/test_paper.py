@@ -11,6 +11,8 @@ def test_buy_then_sell_with_fees():
     assert t2 and t2.side == "SELL"
     assert acc.btc == 0.0
     assert acc.equity(110.0) > 1000
+    assert t2.pnl is not None and t2.pnl > 0 and t2.cost is not None
+    assert abs(t2.pnl - (acc.equity(110.0) - 1000)) < 1e-6   # итог продажи = вся прибыль круга
 
 
 def test_no_leverage():

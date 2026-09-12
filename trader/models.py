@@ -48,6 +48,8 @@ class Trade:
     qty: float
     fee: float
     reason: str
+    pnl: float | None = None     # результат продажи в $ (для BUY нет)
+    cost: float | None = None    # стоимость проданного по цене входа, чтобы считать %
 
 
 @dataclass
