@@ -184,7 +184,7 @@
     const fired = s.agents.filter((a) => a.status === "fired");
     const sorted = [...alive].sort((a, b) => b.pnl_total - a.pnl_total);
     return `<h2 class="sec">Коты · основная команда · ${alive.length} из ${s.team_size}</h2>
-      <div class="note" style="margin-bottom:8px">Каждый кот торгует своими 1000 $ по своей теории и сам решает, как часто смотреть на рынок: колонка «Ритм». Размер позиции считается от риска: на одной сделке кот может потерять не больше ${fmt((s.risk_per_trade || 0.01) * 100, 0)}% капитала до стоп-лосса, и никогда не держит больше ${fmt((s.max_exposure || 1) * 100, 0)}% в BTC. Стоп-лосс проверяется каждую минуту.</div>
+      <div class="note" style="margin-bottom:8px">Каждый кот торгует своими 1000 $ по своей теории и сам решает, как часто смотреть на рынок: колонка «Ритм». ${(s.risk_per_trade || 1) < 1 ? `Размер позиции считается от риска: на одной сделке кот может потерять не больше ${fmt(s.risk_per_trade * 100, 0)}% капитала до стоп-лосса.` : "Размер позиции задаёт сама стратегия, потолок " + fmt((s.max_exposure || 1) * 100, 0) + "% капитала."} У каждой позиции есть стоп-лосс, он проверяется каждую минуту.</div>
       <div class="card list"><div class="acc-head"><span>Агент</span><span>Ритм</span><span>За 24 ч</span><span>За всё время</span><span></span></div>${sorted.map((a) => agentRow(a)).join("")}</div>
       ${fired.length ? `<h2 class="sec">Уволенные · ${fired.length}</h2><div class="card list">${fired.map((a) => agentRow(a)).join("")}</div>` : ""}`;
   }

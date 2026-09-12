@@ -49,6 +49,9 @@ def test_exposure_sized_by_risk_and_capped():
     # буквальный потолок 10%
     rm2 = RiskManager(Settings(agent_max_exposure=0.10, risk_per_trade=0.5))
     assert rm2.check_agent(a, Signal(Action.BUY, 1.0, 1.0, "x"), 100.0, atr_pct=0.01).target_exposure == 0.10
+    # значения по умолчанию: вход всем капиталом, ограничение риска выключено
+    rm3 = RiskManager(Settings())
+    assert rm3.check_agent(a, Signal(Action.BUY, 1.0, 1.0, "x"), 100.0, atr_pct=0.05).target_exposure == 1.0
 
 
 def test_department_halt():
