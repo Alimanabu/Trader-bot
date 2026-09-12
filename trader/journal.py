@@ -1,0 +1,228 @@
+"""Журнал: всё, что сделала система, с обоснованием и результатом. SQLite, один файл."""
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+import time
+from pathlib import Path
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    agent TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target_exposure REAL NOT NULL,
+    confidence REAL NOT NULL,
+    reason TEXT NOT NULL,
+    price REAL NOT NULL,
+    equity_before REAL NOT NULL,
+    executed INTEGER NOT NULL DEFAULT 0,
+    blocked_by TEXT,
+    outcome_pct REAL,          -- изменение цены через горизонт оценки (заполняется позже)
+    outcome_ts INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_decisions_agent_ts ON decisions(agent, ts);
+CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL, agent TEXT NOT NULL, side TEXT NOT NULL,
+    price REAL NOT NULL, qty REAL NOT NULL, fee REAL NOT NULL, reason TEXT
+);
+CREATE TABLE IF NOT EXISTS equity (
+    ts INTEGER NOT NULL, agent TEXT NOT NULL, equity REAL NOT NULL, price REAL NOT NULL,
+    PRIMARY KEY (ts, agent)
+);
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL, kind TEXT NOT NULL, agent TEXT, message TEXT NOT NULL, data TEXT
+);
+CREATE TABLE IF NOT EXISTS agents (
+    name TEXT PRIMARY KEY, strategy TEXT NOT NULL, params TEXT NOT NULL, status TEXT NOT NULL,
+    hired_at INTEGER NOT NULL, fired_at INTEGER, cash REAL NOT NULL, btc REAL NOT NULL,
+    peak_equity REAL NOT NULL, day_start_equity REAL NOT NULL, day_key TEXT NOT NULL,
+    start_balance REAL NOT NULL, realized_pnl REAL NOT NULL DEFAULT 0, avg_entry REAL NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS bench (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL, strategy TEXT NOT NULL, params TEXT NOT NULL,
+    score REAL NOT NULL, stats TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS approvals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, details TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending', decided_ts INTEGER
+);
+CREATE TABLE IF NOT EXISTS lessons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL, agent TEXT NOT NULL, lesson TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+"""
+
+
+class Journal:
+    def __init__(self, path: str | Path = ":memory:"):
+        self.path = str(path)
+        if self.path != ":memory:":
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        with self._lock:
+            self._conn.executescript(SCHEMA)
+
+    # --- служебное ---
+    def _exec(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            self._conn.commit()
+            return cur
+
+    def _rows(self, sql: str, params: tuple = ()) -> list[dict]:
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+
+    def kv_get(self, key: str, default=None):
+        rows = self._rows("SELECT value FROM kv WHERE key=?", (key,))
+        return json.loads(rows[0]["value"]) if rows else default
+
+    def kv_set(self, key: str, value) -> None:
+        self._exec("INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                   (key, json.dumps(value)))
+
+    # --- записи ---
+    def decision(self, ts, agent, strategy, action, target, confidence, reason, price, equity, executed, blocked_by=None) -> int:
+        cur = self._exec(
+            "INSERT INTO decisions(ts,agent,strategy,action,target_exposure,confidence,reason,price,equity_before,executed,blocked_by)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (ts, agent, strategy, action, target, confidence, reason, price, equity, int(executed), blocked_by))
+        return cur.lastrowid
+
+    def trade(self, t) -> None:
+        self._exec("INSERT INTO trades(ts,agent,side,price,qty,fee,reason) VALUES(?,?,?,?,?,?,?)",
+                   (t.ts, t.agent, t.side, t.price, t.qty, t.fee, t.reason))
+
+    def equity(self, ts, agent, equity, price) -> None:
+        self._exec("INSERT OR REPLACE INTO equity(ts,agent,equity,price) VALUES(?,?,?,?)", (ts, agent, equity, price))
+
+    def event(self, kind: str, message: str, agent: str | None = None, data: dict | None = None, ts: int | None = None) -> None:
+        self._exec("INSERT INTO events(ts,kind,agent,message,data) VALUES(?,?,?,?,?)",
+                   (ts or int(time.time()), kind, agent, message, json.dumps(data or {}, ensure_ascii=False)))
+
+    def lesson(self, agent: str, text: str, ts: int | None = None) -> None:
+        self._exec("INSERT INTO lessons(ts,agent,lesson) VALUES(?,?,?)", (ts or int(time.time()), agent, text))
+
+    def lessons_for(self, agent: str, limit: int = 8) -> list[str]:
+        rows = self._rows("SELECT lesson FROM lessons WHERE agent=? ORDER BY id DESC LIMIT ?", (agent, limit))
+        return [r["lesson"] for r in reversed(rows)]
+
+    def fill_outcomes(self, price_now: float, ts_now: int, horizon_s: int = 4 * 3600) -> int:
+        """Проставить результат решениям, чей горизонт оценки уже наступил."""
+        rows = self._rows("SELECT id, price FROM decisions WHERE outcome_pct IS NULL AND ts <= ?", (ts_now - horizon_s,))
+        for r in rows:
+            pct = (price_now / r["price"] - 1) * 100 if r["price"] else 0.0
+            self._exec("UPDATE decisions SET outcome_pct=?, outcome_ts=? WHERE id=?", (pct, ts_now, r["id"]))
+        return len(rows)
+
+    # --- запросы ---
+    def recent_decisions(self, agent: str | None = None, limit: int = 50) -> list[dict]:
+        if agent:
+            return self._rows("SELECT * FROM decisions WHERE agent=? ORDER BY id DESC LIMIT ?", (agent, limit))
+        return self._rows("SELECT * FROM decisions ORDER BY id DESC LIMIT ?", (limit,))
+
+    def mistakes(self, agent: str, limit: int = 10) -> list[dict]:
+        """Решения, оказавшиеся неверными: купил перед падением или продал перед ростом."""
+        return self._rows(
+            "SELECT * FROM decisions WHERE agent=? AND executed=1 AND outcome_pct IS NOT NULL AND "
+            "((action='BUY' AND outcome_pct < -0.5) OR (action='SELL' AND outcome_pct > 0.5)) "
+            "ORDER BY id DESC LIMIT ?", (agent, limit))
+
+    def trades_for(self, agent: str) -> list[dict]:
+        return self._rows("SELECT * FROM trades WHERE agent=? ORDER BY id", (agent,))
+
+    def recent_trades(self, limit: int = 100) -> list[dict]:
+        return self._rows("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,))
+
+    def recent_events(self, limit: int = 100) -> list[dict]:
+        return self._rows("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,))
+
+    def equity_curve(self, agent: str, limit: int = 500) -> list[dict]:
+        rows = self._rows("SELECT ts, equity, price FROM equity WHERE agent=? ORDER BY ts DESC LIMIT ?", (agent, limit))
+        return list(reversed(rows))
+
+    def equity_all(self, limit_per_agent: int = 500) -> dict[str, list[dict]]:
+        out: dict[str, list[dict]] = {}
+        for r in self._rows("SELECT DISTINCT agent FROM equity"):
+            out[r["agent"]] = self.equity_curve(r["agent"], limit_per_agent)
+        return out
+
+    # --- агенты (сохранение состояния) ---
+    def save_agent(self, a) -> None:
+        self._exec(
+            "INSERT INTO agents(name,strategy,params,status,hired_at,cash,btc,peak_equity,day_start_equity,day_key,"
+            "start_balance,realized_pnl,avg_entry,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(name) DO UPDATE SET strategy=excluded.strategy, params=excluded.params, status=excluded.status,"
+            " hired_at=excluded.hired_at, cash=excluded.cash, btc=excluded.btc, peak_equity=excluded.peak_equity,"
+            " day_start_equity=excluded.day_start_equity, day_key=excluded.day_key, start_balance=excluded.start_balance,"
+            " realized_pnl=excluded.realized_pnl, avg_entry=excluded.avg_entry, notes=excluded.notes",
+            (a.name, a.strategy.family, json.dumps(a.strategy.params), a.status, a.hired_at, a.account.cash,
+             a.account.btc, a.peak_equity, a.day_start_equity, a.day_key, a.start_balance(),
+             a.account.realized_pnl, a.account._avg_entry, json.dumps(a.notes, ensure_ascii=False)))
+
+    def mark_fired(self, name: str, ts: int) -> None:
+        self._exec("UPDATE agents SET status='fired', fired_at=? WHERE name=?", (ts, name))
+
+    def load_agents(self) -> list[dict]:
+        return self._rows("SELECT * FROM agents WHERE status != 'fired'")
+
+    def all_agents(self) -> list[dict]:
+        return self._rows("SELECT * FROM agents ORDER BY hired_at")
+
+    # --- скамейка запасных ---
+    def add_bench(self, strategy: str, params: dict, score: float, stats: dict, ts: int | None = None) -> None:
+        self._exec("INSERT INTO bench(ts,strategy,params,score,stats) VALUES(?,?,?,?,?)",
+                   (ts or int(time.time()), strategy, json.dumps(params), score, json.dumps(stats)))
+
+    def clear_bench(self) -> None:
+        self._exec("DELETE FROM bench WHERE used=0")
+
+    def bench(self) -> list[dict]:
+        rows = self._rows("SELECT * FROM bench WHERE used=0 ORDER BY score DESC")
+        for r in rows:
+            r["params"] = json.loads(r["params"])
+            r["stats"] = json.loads(r["stats"])
+        return rows
+
+    def take_from_bench(self, exclude_families: set[str] | None = None) -> dict | None:
+        for r in self.bench():
+            if exclude_families and r["strategy"] in exclude_families:
+                continue
+            self._exec("UPDATE bench SET used=1 WHERE id=?", (r["id"],))
+            return r
+        return None
+
+    # --- одобрения ---
+    def request_approval(self, kind: str, title: str, details: dict, ts: int | None = None) -> int:
+        cur = self._exec("INSERT INTO approvals(ts,kind,title,details) VALUES(?,?,?,?)",
+                         (ts or int(time.time()), kind, title, json.dumps(details, ensure_ascii=False)))
+        return cur.lastrowid
+
+    def pending_approvals(self) -> list[dict]:
+        rows = self._rows("SELECT * FROM approvals WHERE status='pending' ORDER BY id")
+        for r in rows:
+            r["details"] = json.loads(r["details"])
+        return rows
+
+    def decide_approval(self, approval_id: int, approve: bool) -> dict | None:
+        rows = self._rows("SELECT * FROM approvals WHERE id=? AND status='pending'", (approval_id,))
+        if not rows:
+            return None
+        self._exec("UPDATE approvals SET status=?, decided_ts=? WHERE id=?",
+                   ("approved" if approve else "rejected", int(time.time()), approval_id))
+        r = rows[0]
+        r["details"] = json.loads(r["details"])
+        r["status"] = "approved" if approve else "rejected"
+        return r

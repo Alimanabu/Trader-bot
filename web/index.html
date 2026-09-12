@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Отдел BTC-агентов</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/static/icon.svg">
+<link rel="apple-touch-icon" href="/static/icon.svg">
+<meta name="theme-color" content="#0f1115">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<h1><span class="dot" id="dot"></span>Отдел BTC-агентов <span class="badge" id="mode">демо</span></h1>
+<div class="toolbar">
+  <span class="muted" id="meta">загрузка…</span>
+  <button id="btn-tick" title="Проверить, не закрылась ли новая свеча">Обновить</button>
+  <button id="btn-research" title="Запустить отдел исследований">Исследование</button>
+</div>
+
+<div class="card summary" id="summary"></div>
+
+<h2>Капитал отдела</h2>
+<div class="card"><canvas id="chart"></canvas><div class="note" id="chart-note"></div></div>
+
+<div id="approvals-block" hidden>
+  <h2>Требуют вашего решения</h2>
+  <div id="approvals"></div>
+</div>
+
+<h2>Агенты</h2>
+<div class="grid" id="agents"></div>
+
+<h2>Скамейка запасных (отдел исследований)</h2>
+<div class="card" id="bench"></div>
+
+<h2>События</h2>
+<div class="card"><ul class="events" id="events"></ul></div>
+
+<div class="modal" id="modal"><div class="box" id="modal-box"></div></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
