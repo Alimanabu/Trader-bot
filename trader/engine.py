@@ -48,6 +48,7 @@ class Engine:
         self.last_candles: list[Candle] = []
         self.last_tick_ts: int = self.j.kv_get("last_tick_ts", 0)
         self.last_price: float = float(self.j.kv_get("last_price", 0.0))
+        self.last_poll_ts: int = 0
         self.last_error: str = ""
         self._load()
 
@@ -169,6 +170,7 @@ class Engine:
         self.last_candles = candles
         self.last_price = price
         self.last_error = ""
+        self.last_poll_ts = now_i
         new_candle = last.ts > self.last_tick_ts
         if new_candle:
             self.last_tick_ts = last.ts
@@ -257,7 +259,7 @@ class Engine:
             self.head.drop_intern(a, price, ts, f"просадка {a.drawdown(price)*100:.1f}%")
             return
         exp_before = a.account.exposure(price)
-        t = a.account.rebalance(sig.target_exposure, price, ts, sig.reason)
+        t = a.account.rebalance(min(self.s.agent_max_exposure, sig.target_exposure), price, ts, sig.reason)
         if t:
             self.j.trade(t)
         eq = a.equity(price)
@@ -370,7 +372,19 @@ class Engine:
             "approvals": self.j.pending_approvals(),
             "events": self.j.recent_events(40),
             "decisions": self.j.recent_decisions(None, 60),
+            "trades_24h": self._trades_24h(now_i),
+            "last_poll_ts": self.last_poll_ts,
+            "max_exposure": self.s.agent_max_exposure,
         }
+
+    def _trades_24h(self, now_i: int) -> list[dict]:
+        kinds = {a.name: ("intern" if a.status in {"intern", "dropped"} else "team") for a in self.agents}
+        out = []
+        for t in self.j.trades_since(now_i - 86400, 200):
+            t["kind"] = kinds.get(t["agent"], "team")
+            t["usd"] = round(t["price"] * t["qty"], 2)
+            out.append(t)
+        return out
 
     def apply_approval(self, approval_id: int, approve: bool) -> dict | None:
         r = self.j.decide_approval(approval_id, approve)

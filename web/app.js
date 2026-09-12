@@ -20,8 +20,9 @@
 
   const TABS = ["home", "team", "interns", "lab", "reports"];
   let state = null, tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "home", equityData = null, summary = null, families = null, range = "all";
-  let office = null, chartPoints = [];
+  let chartPoints = [];
   const openRows = new Set();
+  let showInternTrades = false;
   const TZ = "Asia/Almaty";   // Астана, UTC+5
   const astana = (d = new Date()) => d.toLocaleString("ru-RU", { timeZone: TZ, day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }).replace(",", "");
   const astanaTime = (d) => d.toLocaleTimeString("ru-RU", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
@@ -53,7 +54,7 @@
   // ---------- шапка ----------
   function renderTop(s) {
     const d = s.department;
-    $("#meta").textContent = `${s.symbol} ${s.timeframe} · ${s.market} · свеча закрыта ${s.candle_close_ts ? astanaTime(new Date(s.candle_close_ts * 1000)) : "—"}` + (s.error ? ` · ${s.error}` : "") + (d.halted ? " · ОТДЕЛ ОСТАНОВЛЕН" : "");
+    $("#meta").textContent = `${s.market} · BTC ${fmt(s.price, 0)} $ · обновлено ${s.last_poll_ts ? astanaTime(new Date(s.last_poll_ts * 1000)) : "—"}` + (s.error ? ` · ${s.error}` : "") + (d.halted ? " · ОТДЕЛ ОСТАНОВЛЕН" : "");
     $("#dot").className = "dot " + (s.error ? "err" : "ok");
   }
 
@@ -66,12 +67,24 @@
     return `<section class="hero fade">
       <div class="label">Капитал отдела · демосчёт</div>
       <div class="big num">${fmt(d.equity)} <small>$</small></div>
-      <div class="sub num">BTC ${fmt(s.price, 0)} $ · ${team.length} из ${s.team_size} агентов · ${s.interns.length} стажёров</div>
-      <div class="sub num">Нейросеть: ${s.llm ? `${esc(s.llm_model)} · сегодня ${fmt(s.llm_spend?.usd ?? 0, 2)} $ из ${fmt(s.llm_spend?.budget ?? 0, 2)} $ (${s.llm_spend?.calls ?? 0} вызовов)` : "нет ключа, 3 агента ждут"}</div>
-      <div class="sub" id="clock"></div>
       <div class="delta num ${cls(day)}">${sign(day)} $ <span>за сегодня</span></div>
       <div class="delta num ${cls(d.pnl)}">${sign(d.pnl)} $ (${sign(pct, 2)}%) <span>за всё время</span></div>
     </section>`;
+  }
+
+  // ---------- лог сделок за 24 часа ----------
+  function tradesHTML(s) {
+    const all = s.trades_24h || [];
+    const list = showInternTrades ? all : all.filter((t) => t.kind !== "intern");
+    const buys = list.filter((t) => t.side === "BUY").length, sells = list.length - buys;
+    const rows = list.slice(0, 40).map((t) => `<li class="trade ${t.side === "BUY" ? "buy" : "sell"}" data-name="${esc(t.agent)}">
+        ${catSVG(t.agent, t.kind, 34)}
+        <div class="tinfo"><b>${esc(t.agent)}</b><span class="muted">${t.kind === "intern" ? "котёнок · " : ""}${esc(t.reason || "")}</span></div>
+        <div class="tsum num"><b class="${t.side === "BUY" ? "up" : "down"}">${t.side === "BUY" ? "купил" : "продал"} ${fmt(t.usd, 0)} $</b><span class="muted">${fmt(t.qty, 5)} BTC по ${fmt(t.price, 0)}</span><time>${hhmm(t.ts)}</time></div>
+      </li>`).join("");
+    return `<div class="card fade"><div class="cardhead"><h3>Сделки за 24 часа <span class="muted">· ${list.length}: ${buys} покупок, ${sells} продаж</span></h3>
+        <label class="toggle"><input type="checkbox" id="toggle-interns" ${showInternTrades ? "checked" : ""}> котята</label></div>
+      ${rows ? `<ul class="trades">${rows}</ul>` : `<div class="note">За последние сутки сделок не было: коты ждут сигнала.</div>`}</div>`;
   }
 
   function allocHTML(s) {
@@ -101,19 +114,13 @@
   }
 
   function homeHTML(s) {
-    return heroHTML(s) + `
-      <div class="card office fade"><h3>Офис отдела</h3>
-        <canvas id="office"></canvas>
-        <div class="legend"><span><i style="background:var(--btc)"></i>оранжевое свечение: агент держит BTC</span><span><i style="background:var(--up)"></i>результат в плюсе</span><span><i style="background:var(--down)"></i>результат в минусе</span><span><i style="background:var(--violet)"></i>кабинеты отделов сверху, стажёры внизу</span></div>
-        <div class="note" style="margin-top:6px">Нажатие на рабочее место открывает карточку сотрудника.</div></div>
+    return heroHTML(s) + approvalsHTML(s) + tradesHTML(s) + `
       <div class="card chart fade"><h3>Результат отдела, $</h3>
         <div class="range"><button data-r="day" class="${range === "day" ? "active" : ""}">День</button><button data-r="week" class="${range === "week" ? "active" : ""}">Неделя</button><button data-r="all" class="${range === "all" ? "active" : ""}">Всё время</button></div>
         <canvas id="chart"></canvas><div class="tip" id="tip"></div><div class="note" id="chart-note"></div></div>
       ${allocHTML(s)}
-      ${approvalsHTML(s)}
       <div class="card fade"><h3>Последние события</h3><ul class="events">${eventsHTML(s.events.slice(0, 8))}</ul></div>`;
   }
-
 
   // ---------- раскрывающаяся строка агента ----------
   const mm = (m) => ":" + String(m).padStart(2, "0");
@@ -124,7 +131,7 @@
     const nextIn = a.next_decision_ts ? Math.max(0, Math.round((a.next_decision_ts - Date.now() / 1000) / 60)) : null;
     return `<details class="acc ${a.status}" data-name="${nameShort}">
       <summary>
-        <div class="acc-name"><b>${nameShort}</b><span class="state ${a.status !== "active" && a.status !== "intern" ? a.status : a.exposure > 0 ? "inpos" : "wait"}">${a.status === "paused" ? "пауза" : a.status === "fired" ? "уволен" : a.status === "dropped" ? "отчислен" : a.exposure > 0 ? `в BTC ${fmt(a.exposure * 100, 0)}%` : a.decided_at ? "ждёт сигнала" : "ещё не решал"}</span></div>
+        <div class="acc-name">${catSVG(a.name, isIntern ? "intern" : "team", 36)}<div><b>${nameShort}</b><span class="state ${a.status !== "active" && a.status !== "intern" ? a.status : a.exposure > 0 ? "inpos" : "wait"}">${a.status === "paused" ? "пауза" : a.status === "fired" ? "уволен" : a.status === "dropped" ? "отчислен" : a.exposure > 0 ? `в BTC ${fmt(a.exposure * 100, 0)}%` : a.decided_at ? "ждёт сигнала" : "ещё не решал"}</span></div></div>
         <div class="acc-time num" title="Как часто агент смотрит на рынок">${a.strategy.startsWith("llm_") ? "сам" : a.cadence_minutes >= 60 ? "1 ч" : a.cadence_minutes + " м"}</div>
         <div class="acc-pnl num ${cls(a.pnl_24h)}">${sign(a.pnl_24h)} $<small>24 ч</small></div>
         <div class="acc-pnl num ${cls(a.pnl_total)}">${sign(a.pnl_total)} $<small>всего</small></div>
@@ -168,7 +175,7 @@
     const alive = s.agents.filter((a) => a.status !== "fired");
     const fired = s.agents.filter((a) => a.status === "fired");
     const sorted = [...alive].sort((a, b) => b.pnl_total - a.pnl_total);
-    return `<h2 class="sec">Команда · ${alive.length} из ${s.team_size}</h2>
+    return `<h2 class="sec">Коты · основная команда · ${alive.length} из ${s.team_size}</h2>
       <div class="note" style="margin-bottom:8px">Каждый агент торгует своими 1000 $ по своей теории и сам решает, как часто смотреть на рынок: колонка «Ритм». Пробойные проверяют цену каждую минуту, трендовые раз в 10 минут, нейро-агенты сами назначают время следующей проверки и ставят будильники по цене. Сделка происходит только когда меняется цель.</div>
       <div class="card list"><div class="acc-head"><span>Агент</span><span>Ритм</span><span>За 24 ч</span><span>За всё время</span><span></span></div>${sorted.map((a) => agentRow(a)).join("")}</div>
       ${fired.length ? `<h2 class="sec">Уволенные · ${fired.length}</h2><div class="card list">${fired.map((a) => agentRow(a)).join("")}</div>` : ""}`;
@@ -183,7 +190,7 @@
     const traded = s.interns.filter((a) => a.trades > 0).length;
     const best = s.interns[0];
     const nextUp = [...s.interns].filter((a) => a.next_decision_ts).sort((a, b) => a.next_decision_ts - b.next_decision_ts)[0];
-    return `<h2 class="sec">Стажёры · ${s.interns.length} из ${s.intern_count}</h2>
+    return `<h2 class="sec">Котята · стажёры · ${s.interns.length} из ${s.intern_count}</h2>
       <div class="card"><div class="stat">
         <div><div class="k">В позиции (в BTC)</div><div class="v num">${inBtc} <span class="muted" style="font-size:13px">из ${s.interns.length}</span></div></div>
         <div><div class="k">Уже торговали</div><div class="v num">${traded}</div></div>
@@ -228,6 +235,12 @@
     const reports = sm.reports.map((e) => { let data = {}; try { data = JSON.parse(e.data || "{}"); } catch (_) {} return `<div class="report"><div class="t">${time(e.ts)}</div><div>${esc(e.message)}</div>${(data.recommendations || []).length ? `<ul>${data.recommendations.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}</div>`; }).join("");
     return `<h2 class="sec">Отчёты</h2>
       ${approvalsHTML(s)}
+      <div class="card"><h3>Нейросеть</h3><div class="stat">
+        <div><div class="k">Модель</div><div class="v" style="font-size:14px">${s.llm ? esc(s.llm_model) : "нет ключа"}</div></div>
+        <div><div class="k">Расход сегодня</div><div class="v num">${fmt(s.llm_spend?.usd ?? 0, 2)} $ <span class="muted" style="font-size:12px">из ${fmt(s.llm_spend?.budget ?? 0, 2)} $</span></div></div>
+        <div><div class="k">Вызовов сегодня</div><div class="v num">${s.llm_spend?.calls ?? 0}</div></div>
+        <div><div class="k">Агентов и котят</div><div class="v num">${s.agents.filter((a) => a.status !== "fired").length} · ${s.interns.length}</div></div>
+      </div></div>
       <div class="card"><h3>Сегодня</h3><div class="stat">
         <div><div class="k">Результат дня</div><div class="v num ${cls(day)}">${sign(day)} $</div></div>
         <div><div class="k">Лучший сегодня</div><div class="v" style="font-size:14px">${bestDay ? `${esc(bestDay.name)} <span class="num ${cls(bestDay.pnl_day)}">${sign(bestDay.pnl_day)}</span>` : "—"}</div></div>
@@ -247,14 +260,6 @@
     if (!s.approvals.length) return "";
     return s.approvals.map((p) => `<div class="card approval fade"><div><b>Нужно ваше решение</b><div>${esc(p.title)}</div><div class="note">${time(p.ts)}${p.details.agent_pnl != null ? ` · агент ${sign(p.details.agent_pnl)} $, стажёр ${sign(p.details.intern_pnl)} $` : p.details.pnl != null ? ` · ${sign(p.details.pnl)} $` : ""}</div></div>
       <div class="actions"><button class="btn primary" data-id="${p.id}" data-d="approve">Одобрить</button><button class="btn" data-id="${p.id}" data-d="reject">Отклонить</button></div></div>`).join("");
-  }
-
-  async function startFloorView(view) {
-    if (office) { office.stop(); office = null; }
-    await drawChart();
-    const canvas = $("#office", view); if (!canvas) return;
-    office = window.startFloor(canvas, state, chartPoints, openAgent);
-    const fb = $("#btn-fit", view); if (fb) fb.onclick = () => office && office.fit();
   }
 
   // ---------- график капитала ----------
@@ -299,7 +304,7 @@
     const d = await api(`/api/agents/${encodeURIComponent(name)}`);
     const a = d.agent;
     $("#modal-box").innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div><b style="font-size:18px">${esc(a.name)}</b> <span class="badge ${a.status}">${STATUS[a.status]}</span></div><button class="btn" id="modal-close">Закрыть</button></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="display:flex;align-items:center;gap:10px">${catSVG(a.name, a.status === "intern" ? "intern" : "team", 48)}<div><b style="font-size:18px">${esc(a.name)}</b> <span class="badge ${a.status}">${STATUS[a.status]}</span></div></div><button class="btn" id="modal-close">Закрыть</button></div>
       <div class="note" style="margin-top:6px">${esc(d.description)}</div>
       <div class="note">Параметры: ${Object.entries(a.params).map(([k, v]) => `<span class="tag">${k}=${v}</span>`).join("")}</div>
       <div class="stat" style="margin-top:12px">
@@ -337,7 +342,7 @@
     $$(".range button", view).forEach((b) => b.addEventListener("click", () => { range = b.dataset.r; $$(".range button", view).forEach((x) => x.classList.toggle("active", x === b)); drawChart(); }));
     const rb = $("#btn-research", view);
     if (rb) rb.onclick = async () => { rb.disabled = true; rb.textContent = "Считаю, около минуты…"; try { await api("/api/research", { method: "POST" }); } finally { rb.disabled = false; rb.textContent = "Запустить исследование"; refresh(true); } };
-    if (tab === "home") { startFloorView(view); } else if (office) { office.stop(); office = null; }
+    if (tab === "home") { drawChart(); const tg = $("#toggle-interns", view); if (tg) tg.onchange = () => { showInternTrades = tg.checked; render(); }; }
   }
 
   async function refresh(force) {
@@ -354,7 +359,7 @@
   $$("#tabs button").forEach((x) => x.classList.toggle("active", x.dataset.tab === tab));
   $("#btn-tick").onclick = async () => { const b = $("#btn-tick"); b.disabled = true; try { await api("/api/tick", { method: "POST" }); } finally { b.disabled = false; refresh(true); } };
   $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") $("#modal").classList.remove("open"); });
-  window.addEventListener("resize", () => { if (office) office.layout(); if (tab === "home") drawChart(); });
+  window.addEventListener("resize", () => { if (tab === "home") drawChart(); });
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
   refresh();
   setInterval(() => refresh(false), 60000);

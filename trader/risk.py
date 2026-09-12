@@ -44,7 +44,7 @@ class RiskManager:
 
     def check_agent(self, agent: Agent, signal: Signal, price: float) -> RiskVerdict:
         eq = agent.equity(price)
-        target = min(1.0, max(0.0, signal.target_exposure))
+        target = min(self.s.agent_max_exposure, max(0.0, signal.target_exposure))
         if agent.status == "fired":
             return RiskVerdict(False, 0.0, "агент уволен", fire=False)
         dd = agent.drawdown(price)
@@ -57,5 +57,5 @@ class RiskManager:
         if agent.status == "paused":
             return RiskVerdict(False, 0.0, "агент на паузе до конца дня")
         if target != signal.target_exposure:
-            return RiskVerdict(True, target, "доля ограничена диапазоном 0..100% (без плеча)")
+            return RiskVerdict(True, target, f"доля ограничена потолком {self.s.agent_max_exposure:.0%}")
         return RiskVerdict(True, target, "ok")

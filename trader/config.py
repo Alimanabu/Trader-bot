@@ -35,6 +35,7 @@ class Settings:
     agent_start_balance: float = 1000.0
     fee_rate: float = 0.001
     slippage_rate: float = 0.0002
+    agent_max_exposure: float = 1.0    # максимальная доля капитала агента в BTC (1.0 = может входить всем)
     agent_daily_loss_limit: float = 0.03
     agent_max_drawdown: float = 0.10
     dept_daily_loss_limit: float = 0.02
@@ -72,6 +73,7 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         agent_start_balance=float(env.get("AGENT_START_BALANCE", "1000")),
         fee_rate=float(env.get("FEE_RATE", "0.001")),
         slippage_rate=float(env.get("SLIPPAGE_RATE", "0.0002")),
+        agent_max_exposure=float(env.get("AGENT_MAX_EXPOSURE", "1.0")),
         agent_daily_loss_limit=float(env.get("AGENT_DAILY_LOSS_LIMIT", "0.03")),
         agent_max_drawdown=float(env.get("AGENT_MAX_DRAWDOWN", "0.10")),
         dept_daily_loss_limit=float(env.get("DEPT_DAILY_LOSS_LIMIT", "0.02")),

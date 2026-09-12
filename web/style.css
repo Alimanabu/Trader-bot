@@ -104,10 +104,12 @@ button.btn.danger { color: var(--down); border-color: var(--down); }
 
 /* вкладки */
 .tabs { position: fixed; left: 0; right: 0; bottom: 0; height: calc(var(--tabbar) + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom); background: rgba(11,13,18,.92); backdrop-filter: blur(12px); border-top: 1px solid var(--line); display: flex; z-index: 6; }
-.tabs button { flex: 1; background: none; border: 0; color: var(--dim); font-size: 11px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; cursor: pointer; }
-.tabs button .ico { font-size: 20px; line-height: 1; }
+.tabs button { flex: 1; background: none; border: 0; color: var(--dim); font-size: 11px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; cursor: pointer; padding: 6px 0; }
+.tabs button svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: transform .15s; }
+.tabs button span { font-weight: 500; }
 .tabs button.active { color: var(--text); }
-.tabs button.active .ico { color: var(--btc); }
+.tabs button.active svg { color: var(--btc); stroke: var(--btc); transform: translateY(-2px); filter: drop-shadow(0 0 6px rgba(247,147,26,.5)); }
+.tabs button.active span { color: var(--btc); }
 
 /* модальное окно */
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: none; align-items: flex-end; justify-content: center; z-index: 10; }
@@ -152,3 +154,23 @@ details.acc[open] .acc-arrow { transform: rotate(90deg); }
 .state.inpos { color: var(--btc); } .state.wait { color: var(--dim); } .state.paused { color: var(--warn); } .state.fired, .state.dropped { color: var(--down); }
 
 .warn { color: var(--warn); }
+
+/* котики и лог сделок */
+.cat { flex: none; border-radius: 50%; background: var(--card2); }
+.acc-name { flex-direction: row; align-items: center; gap: 10px; }
+.acc-name > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cardhead { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cardhead h3 { margin: 0; }
+.toggle { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.toggle input { accent-color: var(--btc); }
+.trades { list-style: none; margin: 8px 0 0; padding: 0; }
+.trade { display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+.trade:last-child { border-bottom: 0; }
+.trade .tinfo { display: flex; flex-direction: column; min-width: 0; }
+.trade .tinfo b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.trade .tinfo span { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.trade .tsum { display: flex; flex-direction: column; align-items: flex-end; font-size: 12px; line-height: 1.25; }
+.trade .tsum b { font-size: 13px; }
+.trade .tsum time { color: var(--dim); font-size: 11px; }
+.trade.buy .cat { box-shadow: 0 0 0 2px rgba(52,210,123,.45); }
+.trade.sell .cat { box-shadow: 0 0 0 2px rgba(255,107,107,.45); }

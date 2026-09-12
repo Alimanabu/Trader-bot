@@ -160,6 +160,9 @@ class Journal:
     def trades_for(self, agent: str) -> list[dict]:
         return self._rows("SELECT * FROM trades WHERE agent=? ORDER BY id", (agent,))
 
+    def trades_since(self, ts: int, limit: int = 200) -> list[dict]:
+        return self._rows("SELECT * FROM trades WHERE ts>=? ORDER BY id DESC LIMIT ?", (ts, limit))
+
     def recent_trades(self, limit: int = 100) -> list[dict]:
         return self._rows("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,))
 
