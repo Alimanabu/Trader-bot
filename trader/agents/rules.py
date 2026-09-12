@@ -22,6 +22,9 @@ class SmaCross(Strategy):
     def param_grid(cls):
         return {"fast": [10, 20, 30], "slow": [50, 100, 200]}
 
+    def cadence_minutes(self):
+        return 10
+
     def warmup(self):
         return self.params["slow"] + 2
 
@@ -49,6 +52,9 @@ class EmaMomentum(Strategy):
     @classmethod
     def param_grid(cls):
         return {"period": [21, 34, 55, 89], "slope_lookback": [3, 5, 8]}
+
+    def cadence_minutes(self):
+        return 5
 
     def warmup(self):
         return self.params["period"] + self.params["slope_lookback"] + 2
@@ -80,6 +86,9 @@ class RsiReversion(Strategy):
     def param_grid(cls):
         return {"period": [7, 14, 21], "oversold": [20, 25, 30, 35], "overbought": [65, 70, 75, 80]}
 
+    def cadence_minutes(self):
+        return 3
+
     def warmup(self):
         return self.params["period"] * 3
 
@@ -108,6 +117,9 @@ class BollingerReversion(Strategy):
     @classmethod
     def param_grid(cls):
         return {"period": [14, 20, 30], "mult": [1.5, 2.0, 2.5]}
+
+    def cadence_minutes(self):
+        return 3
 
     def warmup(self):
         return self.params["period"] + 2
@@ -139,6 +151,9 @@ class DonchianBreakout(Strategy):
     @classmethod
     def param_grid(cls):
         return {"entry": [12, 24, 48, 96], "exit": [6, 12, 24]}
+
+    def cadence_minutes(self):
+        return 1
 
     def warmup(self):
         return max(self.params["entry"], self.params["exit"]) + 3
@@ -172,6 +187,9 @@ class MacdTrend(Strategy):
     def param_grid(cls):
         return {"fast": [8, 12, 16], "slow": [21, 26, 34], "signal": [6, 9, 12]}
 
+    def cadence_minutes(self):
+        return 10
+
     def warmup(self):
         return self.params["slow"] + self.params["signal"] + 5
 
@@ -199,6 +217,9 @@ class VolumeSpike(Strategy):
     @classmethod
     def param_grid(cls):
         return {"period": [12, 24, 48], "mult": [1.5, 2.0, 3.0], "hold_bars": [3, 6, 12]}
+
+    def cadence_minutes(self):
+        return 2
 
     def warmup(self):
         return self.params["period"] + self.params["hold_bars"] + 2
@@ -235,6 +256,9 @@ class VolatilityRegime(Strategy):
     @classmethod
     def param_grid(cls):
         return {"atr_period": [7, 14, 21], "trend_period": [24, 48, 96], "target_vol": [0.006, 0.01, 0.015]}
+
+    def cadence_minutes(self):
+        return 15
 
     def warmup(self):
         return max(self.params["atr_period"], self.params["trend_period"]) + 3
@@ -277,6 +301,9 @@ class ZScoreReversion(Strategy):
     def param_grid(cls):
         return {"period": [24, 48, 96], "entry_z": [-1.5, -2.0, -2.5], "exit_z": [-0.5, 0.0, 0.5]}
 
+    def cadence_minutes(self):
+        return 3
+
     def warmup(self):
         return self.params["period"] + 2
 
@@ -306,6 +333,9 @@ class RsiDivergence(Strategy):
     @classmethod
     def param_grid(cls):
         return {"rsi_period": [7, 14], "lookback": [12, 24, 48], "hold_bars": [6, 12, 24]}
+
+    def cadence_minutes(self):
+        return 5
 
     def warmup(self):
         return self.params["rsi_period"] * 3 + self.params["lookback"] * 2
@@ -351,6 +381,9 @@ class SuperTrend(Strategy):
     @classmethod
     def param_grid(cls):
         return {"atr_period": [7, 10, 14, 21], "mult": [2.0, 3.0, 4.0]}
+
+    def cadence_minutes(self):
+        return 1
 
     def warmup(self):
         return self.params["atr_period"] * 3
@@ -398,6 +431,9 @@ class KeltnerBreakout(Strategy):
     def param_grid(cls):
         return {"ema_period": [20, 34, 55], "atr_period": [10, 14, 21], "mult": [1.0, 1.5, 2.0]}
 
+    def cadence_minutes(self):
+        return 1
+
     def warmup(self):
         return max(self.params["ema_period"], self.params["atr_period"]) + 3
 
@@ -429,6 +465,9 @@ class MultiTimeframe(Strategy):
     @classmethod
     def param_grid(cls):
         return {"htf_ema": [13, 21, 34], "ltf_ema": [8, 13, 21], "htf_bars": [4, 6]}
+
+    def cadence_minutes(self):
+        return 15
 
     def warmup(self):
         return self.params["htf_ema"] * self.params["htf_bars"] + 10
@@ -462,6 +501,9 @@ class Seasonality(Strategy):
     @classmethod
     def param_grid(cls):
         return {"lookback_days": [7, 14, 21], "min_edge": [0.0002, 0.0004, 0.0008]}
+
+    def cadence_minutes(self):
+        return 60
 
     def warmup(self):
         return self.params["lookback_days"] * 24 + 2

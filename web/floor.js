@@ -162,7 +162,7 @@
       const clock = window.astanaClock ? window.astanaClock() : "";
       text(`${clock} · BTC ${state.price.toLocaleString("ru-RU", { maximumFractionDigits: 0 })} $`, w - 20, h - 12, 9, C.dim, 500, "right");
       const up = (state.upcoming || []).slice(0, 2).map((u) => `${short(u.name)} в ${new Date(u.ts * 1000).toLocaleTimeString("ru-RU", { timeZone: "Asia/Almaty", hour: "2-digit", minute: "2-digit" })}`).join(", ");
-      if (up) text("далее решают: " + up, 20, h - 11, 9, C.dim, 500);
+      if (up) text("следующие проверки: " + up, 20, h - 11, 9, C.dim, 500);
     }
     const roomPeople = {};
     function drawRoom(r, t) {

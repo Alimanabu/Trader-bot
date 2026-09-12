@@ -34,7 +34,7 @@
     const left = Math.max(0, first.ts - now);
     const m = Math.floor(left / 60), sec = Math.floor(left % 60);
     const others = up.slice(1, 3).map((u) => `${u.name.replace(/\s*\(.*\)/, "")} в ${astanaTime(new Date(u.ts * 1000))}`).join(", ");
-    const head = left < 60 ? `${first.name.replace(/\s*\(.*\)/, "")} решает вот-вот, в ${astanaTime(new Date(first.ts * 1000))}` : `${first.name.replace(/\s*\(.*\)/, "")} решает через ${m} мин ${String(sec).padStart(2, "0")} с, в ${astanaTime(new Date(first.ts * 1000))}`;
+    const head = left < 60 ? `${first.name.replace(/\s*\(.*\)/, "")} проверяет рынок вот-вот` : `${first.name.replace(/\s*\(.*\)/, "")} проверит рынок через ${m} мин ${String(sec).padStart(2, "0")} с, в ${astanaTime(new Date(first.ts * 1000))}`;
     return head + (others ? `; далее ${others}` : "");
   }
   function tickClock() {
@@ -124,7 +124,7 @@
     return `<details class="acc ${a.status}" data-name="${nameShort}">
       <summary>
         <div class="acc-name"><b>${nameShort}</b><span class="state ${a.status !== "active" && a.status !== "intern" ? a.status : a.exposure > 0 ? "inpos" : "wait"}">${a.status === "paused" ? "пауза" : a.status === "fired" ? "уволен" : a.status === "dropped" ? "отчислен" : a.exposure > 0 ? `в BTC ${fmt(a.exposure * 100, 0)}%` : a.decided_at ? "ждёт сигнала" : "ещё не решал"}</span></div>
-        <div class="acc-time num" title="Минута часа, в которую агент принимает решение">${mm(a.slot_minute)}</div>
+        <div class="acc-time num" title="Как часто агент смотрит на рынок">${a.strategy.startsWith("llm_") ? "сам" : a.cadence_minutes >= 60 ? "1 ч" : a.cadence_minutes + " м"}</div>
         <div class="acc-pnl num ${cls(a.pnl_24h)}">${sign(a.pnl_24h)} $<small>24 ч</small></div>
         <div class="acc-pnl num ${cls(a.pnl_total)}">${sign(a.pnl_total)} $<small>всего</small></div>
         <div class="acc-arrow">›</div>
@@ -138,8 +138,10 @@
           <div><span>Просадка</span><b class="num">${fmt(a.drawdown * 100, 1)}%</b></div>
           <div><span>Сделок · побед</span><b class="num">${a.trades} · ${fmt(a.win_rate * 100, 0)}%</b></div>
           <div><span>${isIntern ? "На стажировке" : "В команде"}</span><b class="num">${a.days} дн.</b></div>
-          <div><span>Решал</span><b class="num">${hhmm(a.decided_at)}</b></div>
-          <div><span>Следующее</span><b class="num">${hhmm(a.next_decision_ts)}${nextIn != null ? ` <span class="muted">(через ${nextIn} мин)</span>` : ""}</b></div>
+          <div><span>Смотрит на рынок</span><b class="num">${a.strategy.startsWith("llm_") ? "сам решает когда" : a.cadence_minutes >= 60 ? "раз в час" : `каждые ${a.cadence_minutes} мин`}</b></div>
+          <div><span>Последняя проверка</span><b class="num">${hhmm(a.decided_at)}</b></div>
+          <div><span>Следующая</span><b class="num">${hhmm(a.next_decision_ts)}${nextIn != null ? ` <span class="muted">(через ${nextIn} мин)</span>` : ""}</b></div>
+          ${a.alert_above || a.alert_below ? `<div><span>Будильники по цене</span><b class="num">${a.alert_above ? "выше " + fmt(a.alert_above, 0) : ""}${a.alert_above && a.alert_below ? " · " : ""}${a.alert_below ? "ниже " + fmt(a.alert_below, 0) : ""}</b></div>` : ""}
         </div>
         <div class="bar"><i style="width:${Math.round(a.exposure * 100)}%"></i></div>
         <div class="last"><span class="tag">${ACTION[a.last_action] || "—"}</span> ${esc(a.last_reason || "решений ещё не было")}</div>
@@ -166,8 +168,8 @@
     const fired = s.agents.filter((a) => a.status === "fired");
     const sorted = [...alive].sort((a, b) => b.pnl_total - a.pnl_total);
     return `<h2 class="sec">Команда · ${alive.length} из ${s.team_size}</h2>
-      <div class="note" style="margin-bottom:8px">Каждый агент торгует своими 1000 $ по своей теории и принимает решение раз в час в свою минуту (колонка с двоеточием). Нажмите на строку, чтобы раскрыть.</div>
-      <div class="card list"><div class="acc-head"><span>Агент</span><span>Минута</span><span>За 24 ч</span><span>За всё время</span><span></span></div>${sorted.map((a) => agentRow(a)).join("")}</div>
+      <div class="note" style="margin-bottom:8px">Каждый агент торгует своими 1000 $ по своей теории и сам решает, как часто смотреть на рынок: колонка «Ритм». Пробойные проверяют цену каждую минуту, трендовые раз в 10 минут, нейро-агенты сами назначают время следующей проверки и ставят будильники по цене. Сделка происходит только когда меняется цель.</div>
+      <div class="card list"><div class="acc-head"><span>Агент</span><span>Ритм</span><span>За 24 ч</span><span>За всё время</span><span></span></div>${sorted.map((a) => agentRow(a)).join("")}</div>
       ${fired.length ? `<h2 class="sec">Уволенные · ${fired.length}</h2><div class="card list">${fired.map((a) => agentRow(a)).join("")}</div>` : ""}`;
   }
 
@@ -188,8 +190,8 @@
         <div><div class="k">Лучший</div><div class="v num ${cls(best?.pnl_total)}">${best ? sign(best.pnl_total) + " $" : "—"}</div><div class="note">${best ? esc(best.name) : ""}</div></div>
         <div><div class="k">Следующий решает</div><div class="v" style="font-size:14px">${nextUp ? `${esc(nextUp.name)} в ${hhmm(nextUp.next_decision_ts)}` : "—"}</div></div>
       </div>
-      <div class="note" style="margin-top:10px">Стажёры торгуют в тени на своих демосчетах по 1000 $, каждый в свою минуту часа. Первые часы у большинства нули: стратегия ждёт своего сигнала, а сделка стоит комиссию, поэтому без сигнала они сидят в долларах. Через 14 дней лучший предлагается на замену худшему в команде, при просадке 10% стажёр отчисляется.</div></div>
-      <div class="card list"><h3>Рейтинг · нажмите на строку</h3><div class="acc-head"><span>Стажёр</span><span>Минута</span><span>За 24 ч</span><span>За всё время</span><span></span></div>${s.interns.map((a) => agentRow(a)).join("")}</div>
+      <div class="note" style="margin-top:10px">Стажёры торгуют в тени на своих демосчетах по 1000 $, каждый в своём ритме. Первые часы у большинства нули: стратегия ждёт своего сигнала, а сделка стоит комиссию, поэтому без сигнала они сидят в долларах. Через 14 дней лучший предлагается на замену худшему в команде, при просадке 10% стажёр отчисляется.</div></div>
+      <div class="card list"><h3>Рейтинг · нажмите на строку</h3><div class="acc-head"><span>Стажёр</span><span>Ритм</span><span>За 24 ч</span><span>За всё время</span><span></span></div>${s.interns.map((a) => agentRow(a)).join("")}</div>
       <div class="card"><h3>Что они делают прямо сейчас · последние решения</h3>${feed.length ? `<ul class="feed">${feed.map((d) => `<li><time>${hhmm(d.ts)}</time><b>${esc(d.agent)}</b><span class="tag ${d.action === "BUY" ? "buy" : d.action === "SELL" ? "sell" : ""}">${ACTION[d.action] || d.action}${d.trade_side ? (d.trade_side === "BUY" ? " · купил" : " · продал") : ""}</span><span class="muted">${esc(d.reason)}</span></li>`).join("")}</ul>` : '<div class="note">Первые решения появятся в ближайший час, у каждого стажёра в свою минуту.</div>'}</div>`;
   }
 
@@ -305,11 +307,11 @@
         <div><div class="k">Сегодня</div><div class="v num ${cls(a.pnl_day)}">${sign(a.pnl_day)} $</div></div>
         <div><div class="k">Просадка</div><div class="v num">${fmt(a.drawdown * 100, 1)}%</div></div>
         <div><div class="k">Сделок · побед</div><div class="v num">${a.trades} · ${fmt(a.win_rate * 100, 0)}%</div></div>
-        <div><div class="k">Решает каждый час</div><div class="v num">в :${String(a.slot_minute).padStart(2, "0")}</div></div>
+        <div><div class="k">Смотрит на рынок</div><div class="v num" style="font-size:14px">${a.strategy.startsWith("llm_") ? "сам решает когда" : a.cadence_minutes >= 60 ? "раз в час" : `каждые ${a.cadence_minutes} мин`}</div></div>
       </div>
       ${d.lessons.length ? `<h3 style="margin:14px 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase">Уроки из журнала</h3><ul style="padding-left:18px;font-size:13px">${d.lessons.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}
       <h3 style="margin:14px 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase">Последние решения</h3>
-      <div class="note" style="margin-bottom:6px">«Цель» это какую долю капитала агент хочет держать в BTC после этого часа. Сделка происходит только если цель отличается от текущего состояния. «Цена через 4 ч» показывает, куда ушла цена после решения, заполняется с задержкой.</div>
+      <div class="note" style="margin-bottom:6px">«Цель» это какую долю капитала агент хочет держать в BTC. Сделка происходит только если цель отличается от текущего состояния. В журнал попадают сделки, смена цели и контрольная запись раз в час; промежуточные проверки без изменений не записываются. «Цена через 4 ч» заполняется с задержкой.</div>
       <div class="tbl"><table><tr><th>Время</th><th>Цель</th><th>Сделка</th><th class="r">Цена BTC</th><th class="r">Цена через 4 ч</th><th>Обоснование</th></tr>
       ${d.decisions.map((x) => `<tr><td class="num">${time(x.ts)}</td><td>${ACTION[x.action] || x.action}<div class="dim">${fmt(x.target_exposure * 100, 0)}% в BTC</div></td><td>${tradeCell(x)}</td><td class="r num">${fmt(x.price, 0)}</td><td class="r num ${cls(x.outcome_pct)}">${x.outcome_pct == null ? "—" : sign(x.outcome_pct) + "%"}</td><td class="note">${esc(x.reason)}</td></tr>`).join("")}</table></div>
       ${a.status !== "fired" && a.status !== "dropped" ? `<p><button class="btn danger" id="modal-fire">${a.status === "intern" ? "Отчислить стажёра" : "Уволить агента"}</button></p>` : ""}`;

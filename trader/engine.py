@@ -68,7 +68,8 @@ class Engine:
             a = Agent(name=r["name"], strategy=strat, account=acc, status=r["status"], hired_at=r["hired_at"],
                       peak_equity=r["peak_equity"], day_start_equity=r["day_start_equity"], day_key=r["day_key"],
                       notes=json.loads(r["notes"] or "[]"), last_decided_ts=int(r.get("last_decided_ts") or 0),
-                      slot_minute=int(r.get("slot_minute") or 0))
+                      slot_minute=int(r.get("slot_minute") or 0), next_check_ts=int(r.get("next_check_ts") or 0),
+                      alert_above=float(r.get("alert_above") or 0), alert_below=float(r.get("alert_below") or 0))
             a._start_balance = r["start_balance"]
             a.last_price = self.last_price
             self.agents.append(a)
@@ -99,23 +100,48 @@ class Engine:
         return TIMEFRAME_SECONDS.get(self.s.timeframe, 3600)
 
     def next_decision_ts(self, a: Agent, now: int | None = None) -> int:
-        """Когда агент примет следующее решение (unix-время)."""
+        return a.next_check_ts
+
+    def _is_due(self, a: Agent, now_i: int, price: float, force: bool) -> tuple[bool, str]:
+        if force or a.next_check_ts <= now_i:
+            return True, "по расписанию"
+        if a.alert_above and price >= a.alert_above:
+            return True, f"цена выше будильника {a.alert_above:.0f}"
+        if a.alert_below and price <= a.alert_below:
+            return True, f"цена ниже будильника {a.alert_below:.0f}"
+        return False, ""
+
+    def _schedule_next(self, a: Agent, sig, now_i: int) -> None:
+        """Агент сам говорит, когда смотреть на рынок в следующий раз."""
+        if a.strategy.uses_llm():
+            minutes = int((sig.meta or {}).get("next_check_minutes") or a.strategy.cadence_minutes())
+            minutes = max(self.s.llm_min_interval_min, min(self.s.llm_max_interval_min, minutes))
+            a.alert_above = float((sig.meta or {}).get("wake_if_above") or 0)
+            a.alert_below = float((sig.meta or {}).get("wake_if_below") or 0)
+        else:
+            minutes = max(1, int(a.strategy.cadence_minutes()))
+        a.next_check_ts = now_i + minutes * 60
+
+    def _view(self, candles: list[Candle], price: float, now_i: int) -> list[Candle]:
+        """Закрытые свечи плюс формирующаяся, доведённая до текущей цены."""
         step = self._step_seconds()
-        now = int(now or time.time())
-        last_open = self.last_tick_ts or (now // step * step - step)
-        due = last_open + step + a.slot_minute * 60
-        if a.last_decided_ts < last_open and now < due:
-            return due
-        # по текущей свече уже решил (или пропустил): следующая свеча
-        nxt = max(last_open + step, now // step * step)
-        return nxt + step + a.slot_minute * 60
+        last = candles[-1]
+        f = None
+        try:
+            f = self.market.forming(self.s.symbol, self.s.timeframe)
+        except Exception:  # noqa: BLE001
+            f = None
+        if f is None or f.ts <= last.ts:
+            f = Candle(last.ts + step, last.close, last.close, last.close, last.close, 0.0)
+        f = Candle(f.ts, f.open, max(f.high, price), min(f.low, price), price, f.volume)
+        return candles + [f]
 
     def tick(self, candles: list[Candle] | None = None, force: bool = False, now: float | None = None) -> dict:
-        """Один проход планировщика. Вызывается раз в минуту.
+        """Один проход планировщика (раз в минуту).
 
-        Каждый агент принимает решение по последней закрытой свече в свою минуту часа
-        (slot_minute) и исполняет его по текущей цене. Капитал пересчитывается по живой цене
-        на каждом проходе.
+        Свободный режим: каждый агент сам задаёт, когда ему смотреть на рынок. Стратегии на
+        правилах — своим темпом (от минуты до часа), нейро-агенты — по своему решению и по
+        будильникам на цену. Смотрят они на закрытые свечи плюс текущую, доведённую до живой цены.
         """
         now_i = int(now or time.time())
         step = self._step_seconds()
@@ -140,8 +166,7 @@ class Engine:
         new_candle = last.ts > self.last_tick_ts
         if new_candle:
             self.last_tick_ts = last.ts
-        close_ts = last.ts + step
-        dk = day_key_of(now_i if not force else close_ts)
+        dk = day_key_of(now_i)
         summary = {"ok": True, "ts": last.ts, "price": price, "new_candle": new_candle, "decisions": [], "fired": [], "hired": []}
 
         alive = [a for a in self.agents if a.status not in {"fired", "dropped"}]
@@ -152,7 +177,6 @@ class Engine:
             a.roll_day(dk, price)
             a.observe(price)
 
-        # лимит отдела проверяется на каждом проходе
         ok, why = self.risk.check_department([a for a in self.agents if is_team(a)], price, dk)
         if not ok:
             halted_now = False
@@ -170,21 +194,22 @@ class Engine:
                 self.j.event("halt", f"Отдел остановлен: {why}", None, ts=now_i)
             summary["halt"] = why
 
-        # кто должен принять решение в эту минуту
-        due: list[Agent] = []
+        view = None
         for a in alive:
-            if a.last_decided_ts >= last.ts:
+            due, why_due = self._is_due(a, now_i, price, force)
+            if not due:
                 continue
-            if force or now_i >= close_ts + a.slot_minute * 60:
-                due.append(a)
-        for a in due:
-            a.last_decided_ts = last.ts
+            if view is None:
+                view = self._view(candles, price, now_i)
+            a.last_decided_ts = now_i
             if is_intern(a):
-                self._intern_step(a, candles, price, now_i)
+                self._intern_step(a, view, price, now_i)
             elif is_team(a) and ok:
-                summary["decisions"].append(self._agent_step(a, candles, price, now_i))
+                summary["decisions"].append(self._agent_step(a, view, price, now_i, why_due))
                 if a.status == "fired":
                     summary["fired"].append(a.name)
+            else:
+                a.next_check_ts = now_i + 60
 
         if new_candle:
             self.learner.after_tick(self.agents, candles)
@@ -201,10 +226,18 @@ class Engine:
         summary["interns_added"] = [h.name for h in new_interns]
         if new_candle:
             self.head.review(self.agents, price, now_i)
-        if not new_candle and not due and not hired and not new_interns:
+        if not new_candle and not summary["decisions"] and view is None and not hired and not new_interns:
             summary["skipped"] = True
         self.save()
         return summary
+
+    def _should_log(self, a: Agent, sig, trade, now_i: int) -> bool:
+        """Не засорять журнал: пишем сделки, смену цели и часовой контрольный отпечаток."""
+        if trade is not None or a.strategy.uses_llm():
+            return True
+        if abs(sig.target_exposure - a.last_target) > 1e-9:
+            return True
+        return now_i - a.last_logged_ts >= 3600
 
     def _intern_step(self, a: Agent, candles: list[Candle], price: float, ts: int) -> None:
         ctx = {"exposure": a.account.exposure(price), "bars_in_position": a.bars_in_position}
@@ -222,14 +255,20 @@ class Engine:
         if t:
             self.j.trade(t)
         eq = a.equity(price)
-        self.j.decision(ts, a.name, a.strategy.family, sig.action.value, sig.target_exposure, sig.confidence,
-                        sig.reason, price, eq, True, None, trade=t, exposure_before=exp_before)
-        self.j.equity(ts, a.name, eq, price)
+        if self._should_log(a, sig, t, ts):
+            self.j.decision(ts, a.name, a.strategy.family, sig.action.value, sig.target_exposure, sig.confidence,
+                            sig.reason, price, eq, True, None, trade=t, exposure_before=exp_before)
+            self.j.equity(ts, a.name, eq, price)
+            a.last_logged_ts = ts
+        a.last_target = sig.target_exposure
+        self._schedule_next(a, sig, ts)
         a.observe(price)
-        a.after_trade_tick(price)
+        if t:
+            a.after_trade_tick(price)
 
-    def _agent_step(self, a: Agent, candles: list[Candle], price: float, ts: int) -> dict:
-        ctx = {"exposure": a.account.exposure(price), "lessons": a.notes, "bars_in_position": a.bars_in_position}
+    def _agent_step(self, a: Agent, candles: list[Candle], price: float, ts: int, why_due: str = "") -> dict:
+        ctx = {"exposure": a.account.exposure(price), "lessons": a.notes, "bars_in_position": a.bars_in_position,
+               "llm_min_interval": self.s.llm_min_interval_min, "llm_max_interval": self.s.llm_max_interval_min, "woke_by": why_due}
         try:
             sig = a.strategy.decide(candles, ctx)
         except Exception as e:  # noqa: BLE001
@@ -260,12 +299,18 @@ class Engine:
         else:
             blocked = verdict.reason
         eq = a.equity(price)
-        self.j.decision(ts, a.name, a.strategy.family, sig.action.value, sig.target_exposure, sig.confidence,
-                        sig.reason, price, eq, executed, blocked, trade=trade, exposure_before=exp_before)
+        if blocked or self._should_log(a, sig, trade, ts):
+            self.j.decision(ts, a.name, a.strategy.family, sig.action.value, sig.target_exposure, sig.confidence,
+                            sig.reason, price, eq, executed, blocked, trade=trade, exposure_before=exp_before)
+            if a.status != "fired":
+                self.j.equity(ts, a.name, eq, price)
+            a.last_logged_ts = ts
+        a.last_target = sig.target_exposure
         if a.status != "fired":
-            self.j.equity(ts, a.name, eq, price)
+            self._schedule_next(a, sig, ts)
         a.observe(price)
-        a.after_trade_tick(price)
+        if trade:
+            a.after_trade_tick(price)
         return {"agent": a.name, "action": sig.action.value, "target": sig.target_exposure,
                 "reason": sig.reason, "executed": executed, "blocked": blocked, "equity": round(eq, 2)}
 
@@ -278,7 +323,7 @@ class Engine:
         def enrich(a: Agent) -> dict:
             d = a.snapshot(price).__dict__
             d["next_decision_ts"] = self.next_decision_ts(a, now_i) if a.status in {"active", "paused", "intern"} else 0
-            d["decided_at"] = (a.last_decided_ts + step + a.slot_minute * 60) if a.last_decided_ts else 0
+            d["decided_at"] = a.last_decided_ts
             base = self.j.equity_at(a.name, now_i - 86400)
             if base is None or a.hired_at > now_i - 86400:
                 base = a.start_balance()

@@ -33,6 +33,10 @@ class Strategy(ABC):
         """Сколько свечей нужно, чтобы стратегия начала выдавать сигналы."""
         return 50
 
+    def cadence_minutes(self) -> int:
+        """Как часто стратегия хочет смотреть на рынок (минуты). Каждая задаёт свой темп."""
+        return 5
+
     @abstractmethod
     def decide(self, candles: list[Candle], context: dict | None = None) -> Signal:
         ...
@@ -56,8 +60,13 @@ class Agent:
     notes: list[str] = field(default_factory=list)   # уроки для LLM-агентов
     bars_in_position: int = 0
     last_ts_seen: int = 0
-    last_decided_ts: int = 0     # ts свечи, по которой агент уже принял решение
-    slot_minute: int = 0         # минута часа, в которую агент принимает решение
+    last_decided_ts: int = 0     # когда агент последний раз принимал решение (unix)
+    slot_minute: int = 0         # устаревшее: минута часа (осталось для совместимости БД)
+    next_check_ts: int = 0       # когда агент хочет посмотреть на рынок в следующий раз
+    alert_above: float = 0.0     # «разбуди, если цена выше» (нейро-агенты)
+    alert_below: float = 0.0     # «разбуди, если цена ниже»
+    last_logged_ts: int = 0
+    last_target: float = -1.0
 
     def start_balance(self) -> float:
         return self._start_balance
@@ -140,6 +149,10 @@ class Agent:
             description=self.strategy.description,
             slot_minute=self.slot_minute,
             last_decided_ts=self.last_decided_ts,
+            next_decision_ts=self.next_check_ts,
+            cadence_minutes=self.strategy.cadence_minutes(),
+            alert_above=self.alert_above,
+            alert_below=self.alert_below,
         )
 
 

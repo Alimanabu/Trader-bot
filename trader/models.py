@@ -73,3 +73,6 @@ class AgentSnapshot:
     slot_minute: int = 0
     last_decided_ts: int = 0
     next_decision_ts: int = 0
+    cadence_minutes: int = 0
+    alert_above: float = 0.0
+    alert_below: float = 0.0

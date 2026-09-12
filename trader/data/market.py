@@ -28,6 +28,10 @@ class MarketData(ABC):
         c = self.candles(symbol, "1h", 2)
         return c[-1].close
 
+    def forming(self, symbol: str, timeframe: str) -> Candle | None:
+        """Текущая, ещё не закрытая свеча (если источник её отдаёт)."""
+        return None
+
 
 class BinanceMarket(MarketData):
     name = "binance"
@@ -50,6 +54,16 @@ class BinanceMarket(MarketData):
         r = self.client.get(f"{self.base_url}/api/v3/ticker/price", params={"symbol": symbol})
         r.raise_for_status()
         return float(r.json()["price"])
+
+    def forming(self, symbol: str, timeframe: str) -> Candle | None:
+        r = self.client.get(f"{self.base_url}/api/v3/klines", params={"symbol": symbol, "interval": timeframe, "limit": 1})
+        r.raise_for_status()
+        rows = r.json()
+        if not rows:
+            return None
+        k = rows[-1]
+        c = Candle(int(k[0]) // 1000, float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5]))
+        return c if c.ts + TIMEFRAME_SECONDS.get(timeframe, 3600) > time.time() else None
 
 
 class BybitMarket(MarketData):
@@ -75,6 +89,17 @@ class BybitMarket(MarketData):
         r = self.client.get(f"{self.base_url}/v5/market/tickers", params={"category": "spot", "symbol": symbol})
         r.raise_for_status()
         return float(r.json()["result"]["list"][0]["lastPrice"])
+
+    def forming(self, symbol: str, timeframe: str) -> Candle | None:
+        r = self.client.get(f"{self.base_url}/v5/market/kline",
+                            params={"category": "spot", "symbol": symbol, "interval": self._tf[timeframe], "limit": 1})
+        r.raise_for_status()
+        rows = r.json()["result"]["list"]
+        if not rows:
+            return None
+        k = rows[0]
+        c = Candle(int(k[0]) // 1000, float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5]))
+        return c if c.ts + TIMEFRAME_SECONDS.get(timeframe, 3600) > time.time() else None
 
 
 class FallbackMarket(MarketData):
@@ -105,6 +130,14 @@ class FallbackMarket(MarketData):
             except Exception as e:  # noqa: BLE001
                 last_err = e
         raise RuntimeError(f"Нет текущей цены: {last_err}")
+
+    def forming(self, symbol: str, timeframe: str) -> Candle | None:
+        for src in self.sources:
+            try:
+                return src.forming(symbol, timeframe)
+            except Exception:  # noqa: BLE001
+                continue
+        return None
 
 
 class SyntheticMarket(MarketData):
@@ -149,6 +182,11 @@ class SyntheticMarket(MarketData):
 
     def price(self, symbol: str) -> float:
         return self.candles(symbol, "1h", 1)[-1].close
+
+    def forming(self, symbol: str, timeframe: str) -> Candle | None:
+        last = self.candles(symbol, timeframe, 1)[-1]
+        step = TIMEFRAME_SECONDS[timeframe]
+        return Candle(last.ts + step, last.close, last.close, last.close, last.close, 0.0)
 
     _reserve = 1500   # сколько свечей оставлено «в будущем» для advance()
 

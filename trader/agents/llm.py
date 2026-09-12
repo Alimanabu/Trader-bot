@@ -19,8 +19,11 @@ DECISION_SCHEMA = {
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "reason": {"type": "string"},
         "key_levels": {"type": "array", "items": {"type": "number"}},
+        "next_check_minutes": {"type": "integer", "minimum": 1, "maximum": 1440},
+        "wake_if_above": {"type": "number"},
+        "wake_if_below": {"type": "number"},
     },
-    "required": ["action", "target_exposure", "confidence", "reason", "key_levels"],
+    "required": ["action", "target_exposure", "confidence", "reason", "key_levels", "next_check_minutes", "wake_if_above", "wake_if_below"],
     "additionalProperties": False,
 }
 
@@ -64,6 +67,9 @@ class LLMStrategyBase(Strategy):
     def warmup(self):
         return 200
 
+    def cadence_minutes(self):
+        return 60   # запасной темп, если модель не назвала свой
+
     def decide(self, candles, context=None):
         context = context or {}
         if not self.client or not self.client.enabled:
@@ -72,11 +78,15 @@ class LLMStrategyBase(Strategy):
         lessons_text = "\n".join(f"- {x}" for x in lessons[-8:]) if lessons else "- пока нет"
         news = context.get("news")
         news_block = f"Сводка новостей:\n{news}\n\n" if news else ""
+        lo = int(context.get("llm_min_interval", 15)); hi = int(context.get("llm_max_interval", 360))
         user = (
             f"{news_block}{_summarize(candles)}\n\n"
-            f"Текущая доля BTC в портфеле: {context.get('exposure', 0.0):.0%}.\n"
+            f"Текущая доля BTC в портфеле: {context.get('exposure', 0.0):.0%}. Текущая цена: {candles[-1].close:.0f}.\n"
             f"Уроки из твоих прошлых ошибок (из журнала):\n{lessons_text}\n\n"
-            "Прими решение на ближайший час. Спот, без плеча, без шортов: target_exposure от 0 до 1."
+            "Прими решение. Спот, без плеча, без шортов: target_exposure от 0 до 1.\n"
+            f"Ты сам выбираешь, когда посмотреть на рынок снова: next_check_minutes от {lo} до {hi}. "
+            "В спокойном рынке проверяй реже, при важных уровнях рядом чаще. Дополнительно можешь поставить будильники по цене: "
+            "wake_if_above и wake_if_below (0 = не нужен): если цена их пересечёт, тебя разбудят раньше срока."
         )
         try:
             data = self.client.structured(self.system_prompt, user, DECISION_SCHEMA)
@@ -84,7 +94,8 @@ class LLMStrategyBase(Strategy):
             log.warning("%s: %s", self.family, e)
             return hold(f"LLM недоступен: {e}", context.get("exposure", 0.0))
         return Signal(Action(data["action"]), data["target_exposure"], data["confidence"], data["reason"],
-                      {"key_levels": data.get("key_levels", [])})
+                      {"key_levels": data.get("key_levels", []), "next_check_minutes": data.get("next_check_minutes", 60),
+                       "wake_if_above": data.get("wake_if_above", 0) or 0, "wake_if_below": data.get("wake_if_below", 0) or 0})
 
 
 class LLMTechnician(LLMStrategyBase):

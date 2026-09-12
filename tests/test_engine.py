@@ -9,6 +9,16 @@ def make_engine(settings, seed=3, db=None):
     return Engine(settings, market=market, journal=db or Journal(":memory:"), client=ClaudeClient(None)), market
 
 
+def hours(eng, market, n):
+    """Прогнать n часов: каждый час новая свеча, время идёт явно (все агенты успевают проверить рынок)."""
+    out = []
+    for _ in range(n):
+        last = market.candles("BTCUSDT", "1h", 1)[-1]
+        out.append(eng.tick(now=last.ts + 3600 + 5))
+        market.advance(1)
+    return out
+
+
 def test_engine_creates_department(settings):
     eng, _ = make_engine(settings)
     assert len(eng.agents) == 11
@@ -17,25 +27,25 @@ def test_engine_creates_department(settings):
 
 def test_tick_records_decisions_and_skips_duplicate(settings):
     eng, market = make_engine(settings)
-    res = eng.tick()
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    res = eng.tick(now=T)
     assert res["ok"] and len(res["decisions"]) == 11
     assert len(res["interns_added"]) == settings.intern_count
-    eng.tick()                      # стажёры принимают первые решения
-    again = eng.tick()
+    eng.tick(now=T + 30)            # стажёры принимают первые решения
+    again = eng.tick(now=T + 40)
     assert again.get("skipped")
     market.advance(1)
-    res2 = eng.tick()
-    assert res2["ok"] and not res2.get("skipped")
+    res2 = eng.tick(now=T + 3600)
+    assert res2["ok"] and not res2.get("skipped") and len(res2["decisions"]) == 11
     team_decisions = [d for d in eng.j.recent_decisions(None, 500) if d["agent"] in {a.name for a in eng.agents if a.status == "active"}]
-    assert len(team_decisions) == 22
+    assert len(team_decisions) == 22    # первый проход + часовая контрольная запись
 
 
 def test_state_persists_between_engines(settings):
     db = Journal(":memory:")
     eng, market = make_engine(settings, db=db)
-    for _ in range(30):
-        eng.tick()
-        market.advance(1)
+    hours(eng, market, 30)
     equities = {a.name: round(a.equity(), 4) for a in eng.agents}
     eng2 = Engine(settings, market=market, journal=db, client=ClaudeClient(None))
     assert {a.name: round(a.equity(a.last_price), 4) for a in eng2.agents}.keys() == equities.keys()
@@ -55,11 +65,9 @@ def test_team_size_stays_ten_after_firing(settings):
     settings.agent_daily_loss_limit = 0.9
     settings.dept_daily_loss_limit = 0.9
     eng, market = make_engine(settings)
-    eng.tick(); market.advance(1)
+    hours(eng, market, 1)
     force_drawdown(eng, {a.name for a in eng.agents[:4]})
-    for _ in range(3):
-        eng.tick()
-        market.advance(1)
+    hours(eng, market, 3)
     team = [a for a in eng.agents if a.status in {"active", "paused"}]
     fired = [a for a in eng.agents if a.status == "fired"]
     assert fired, "ожидались увольнения"
@@ -73,11 +81,9 @@ def test_manual_approval_flow(settings):
     settings.agent_daily_loss_limit = 0.9
     settings.dept_daily_loss_limit = 0.9
     eng, market = make_engine(settings)
-    eng.tick(); market.advance(1)
+    hours(eng, market, 1)
     force_drawdown(eng, {eng.agents[0].name})
-    for _ in range(3):
-        eng.tick()
-        market.advance(1)
+    hours(eng, market, 3)
     pend = eng.j.pending_approvals()
     assert pend and pend[0]["kind"] == "hire"
     before = len([a for a in eng.agents if a.status in {"active", "paused"}])
@@ -88,9 +94,7 @@ def test_manual_approval_flow(settings):
 def test_trades_restored_after_restart(settings):
     db = Journal(":memory:")
     eng, market = make_engine(settings, db=db)
-    for _ in range(40):
-        eng.tick()
-        market.advance(1)
+    hours(eng, market, 40)
     counts = {a.name: len(a.account.trades) for a in eng.agents}
     assert any(counts.values())
     eng2 = Engine(settings, market=market, journal=db, client=ClaudeClient(None))
@@ -102,9 +106,7 @@ def test_interns_shadow_and_new_default_agent_backfilled(settings):
     settings.intern_count = 5
     db = Journal(":memory:")
     eng, market = make_engine(settings, db=db)
-    for _ in range(5):
-        eng.tick()
-        market.advance(1)
+    hours(eng, market, 5)
     interns = [a for a in eng.agents if a.status == "intern"]
     assert len(interns) == 5
     st = eng.state()
@@ -121,9 +123,7 @@ def test_interns_shadow_and_new_default_agent_backfilled(settings):
 def test_promotion_approval(settings):
     settings.intern_count = 3
     eng, market = make_engine(settings)
-    for _ in range(3):
-        eng.tick()
-        market.advance(1)
+    hours(eng, market, 3)
     price = eng.last_price
     team = [a for a in eng.agents if a.status == "active"]
     worst = team[0]
@@ -142,21 +142,46 @@ def test_promotion_approval(settings):
     assert abs(intern.equity(price) - settings.agent_start_balance) < 1e-6
 
 
-def test_agents_decide_in_their_own_minute(settings):
+def test_agents_check_market_at_their_own_cadence(settings):
     settings.intern_count = 0
     eng, market = make_engine(settings)
     last = market.candles("BTCUSDT", "1h", 1)[-1]
-    close = last.ts + 3600
-    # в момент закрытия свечи никто ещё не решает
-    res = eng.tick(now=close + 1)
-    assert res["decisions"] == []
-    # через 30 минут решили только те, чья минута ≤ 30
-    res = eng.tick(now=close + 30 * 60)
-    early = {a.name for a in eng.agents if a.slot_minute <= 30}
-    assert {d["agent"] for d in res["decisions"]} == early
-    # к концу часа решили все, и повторно в этот час никто не решает
-    res = eng.tick(now=close + 59 * 60)
-    assert {d["agent"] for d in res["decisions"]} == {a.name for a in eng.agents} - early
-    assert eng.tick(now=close + 59 * 60 + 30).get("skipped")
-    nxt = eng.next_decision_ts(eng.agents[0], close + 59 * 60 + 30)
-    assert nxt == close + 3600 + eng.agents[0].slot_minute * 60
+    T = last.ts + 3600 + 5
+    res = eng.tick(now=T)
+    assert {d["agent"] for d in res["decisions"]} == {a.name for a in eng.agents}
+    assert eng.tick(now=T + 30).get("skipped")
+    res = eng.tick(now=T + 61)
+    fast = {a.name for a in eng.agents if not a.strategy.uses_llm() and a.strategy.cadence_minutes() == 1}
+    assert fast and {d["agent"] for d in res["decisions"]} == fast
+    res = eng.tick(now=T + 10 * 60 + 1)
+    expected = {a.name for a in eng.agents if not a.strategy.uses_llm() and a.strategy.cadence_minutes() <= 10}
+    assert {d["agent"] for d in res["decisions"]} == expected
+    # нейро-агенты без ключа ждут не меньше llm_min_interval_min и не больше llm_max
+    llm = next(a for a in eng.agents if a.strategy.uses_llm())
+    assert settings.llm_min_interval_min * 60 <= llm.next_check_ts - T <= settings.llm_max_interval_min * 60
+
+
+def test_price_alert_wakes_llm_agent(settings):
+    settings.intern_count = 0
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    llm = next(a for a in eng.agents if a.strategy.uses_llm())
+    llm.alert_below = eng.last_price * 2      # цена уже ниже будильника
+    res = eng.tick(now=T + 60)
+    assert llm.name in {d["agent"] for d in res["decisions"]}
+
+
+def test_quiet_checks_are_not_logged(settings):
+    settings.intern_count = 0
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    breakout = next(a for a in eng.agents if a.strategy.family == "breakout")
+    before = len(eng.j.recent_decisions(breakout.name, 500))
+    for k in range(1, 20):
+        eng.tick(now=T + k * 60)
+    after = len(eng.j.recent_decisions(breakout.name, 500))
+    assert after - before <= 3, "проверки без изменений не должны засорять журнал"
