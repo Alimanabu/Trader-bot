@@ -76,7 +76,8 @@ def create_app(engine: Engine | None = None, start_scheduler: bool = True) -> Fa
 
     @app.get("/api/equity")
     def equity():
-        return engine.j.equity_all(500)
+        team = {r["name"] for r in engine.j.all_agents() if r["status"] not in ("intern", "dropped")}
+        return {k: v for k, v in engine.j.equity_all(500).items() if k in team}
 
     @app.get("/api/candles")
     def candles(limit: int = 200):
@@ -105,7 +106,7 @@ def create_app(engine: Engine | None = None, start_scheduler: bool = True) -> Fa
     def research():
         if not engine.last_candles:
             engine.last_candles = engine.market.candles(settings.symbol, settings.timeframe, settings.history_candles)
-        n = engine.head.refresh_bench(engine.last_candles, engine.last_candles[-1].ts)
+        n = engine.head.refresh_bench(engine.last_candles, engine.last_candles[-1].ts, engine.agents)
         return {"ok": True, "candidates": n, "bench": engine.j.bench()}
 
     if WEB_DIR.exists():

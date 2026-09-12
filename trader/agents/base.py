@@ -54,6 +54,8 @@ class Agent:
     last_signal: Signal | None = None
     last_price: float = 0.0
     notes: list[str] = field(default_factory=list)   # уроки для LLM-агентов
+    bars_in_position: int = 0
+    last_ts_seen: int = 0
 
     def start_balance(self) -> float:
         return self._start_balance
@@ -91,6 +93,22 @@ class Agent:
     def observe(self, price: float) -> None:
         self.last_price = price
         self.peak_equity = max(self.peak_equity, self.equity(price))
+
+    def after_trade_tick(self, price: float) -> None:
+        self.bars_in_position = self.bars_in_position + 1 if self.account.btc > 0 else 0
+
+    def reset_account(self, cash: float, ts: int) -> None:
+        """Обнулить историю счёта (при повышении стажёра в команду)."""
+        self.account.cash = cash
+        self.account.btc = 0.0
+        self.account.trades = []
+        self.account.realized_pnl = 0.0
+        self.account._avg_entry = 0.0
+        self._start_balance = cash
+        self.peak_equity = cash
+        self.day_start_equity = cash
+        self.hired_at = ts
+        self.bars_in_position = 0
 
     def snapshot(self, price: float | None = None) -> AgentSnapshot:
         p = price if price is not None else self.last_price

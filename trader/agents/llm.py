@@ -70,8 +70,10 @@ class LLMStrategyBase(Strategy):
             return hold("LLM выключен (нет ключа API)", context.get("exposure", 0.0))
         lessons = context.get("lessons") or []
         lessons_text = "\n".join(f"- {x}" for x in lessons[-8:]) if lessons else "- пока нет"
+        news = context.get("news")
+        news_block = f"Сводка новостей:\n{news}\n\n" if news else ""
         user = (
-            f"{_summarize(candles)}\n\n"
+            f"{news_block}{_summarize(candles)}\n\n"
             f"Текущая доля BTC в портфеле: {context.get('exposure', 0.0):.0%}.\n"
             f"Уроки из твоих прошлых ошибок (из журнала):\n{lessons_text}\n\n"
             "Прими решение на ближайший час. Спот, без плеча, без шортов: target_exposure от 0 до 1."
@@ -109,4 +111,34 @@ class LLMRegime(LLMStrategyBase):
     )
 
 
-LLM_STRATEGIES: list[type[Strategy]] = [LLMTechnician, LLMRegime]
+class LLMNews(LLMStrategyBase):
+    family = "llm_news"
+    description = "Нейросеть-новостник: ищет свежие новости по биткоину и оценивает их влияние на ближайшие часы."
+    system_prompt = (
+        "Ты трейдер по BTC/USDT, решения раз в час, только спот и лонг. Тебе дают краткую сводку свежих "
+        "новостей и рыночную сводку. Оцени, есть ли в новостях события, способные сдвинуть цену в ближайшие "
+        "часы (регуляторы, ETF, взломы, макростатистика, крупные ликвидации), и задай долю капитала в BTC. "
+        "Если новостной фон нейтральный, опирайся на рыночную сводку и держи умеренную долю. "
+        "Учитывай уроки из прошлых ошибок. Отвечай строго по схеме."
+    )
+    search_prompt = (
+        "Ты новостной аналитик крипторынка. Найди самые свежие новости о биткоине и крипторынке за последние "
+        "сутки (регуляторы, ETF, биржи, макроэкономика, крупные движения). Составь сводку из 5-8 пунктов: "
+        "факт, источник, дата, и ожидаемое влияние на цену BTC в ближайшие часы (позитив / негатив / нейтрально). "
+        "Никаких рекомендаций, только факты и оценка влияния."
+    )
+
+    def decide(self, candles, context=None):
+        context = dict(context or {})
+        if not self.client or not self.client.enabled:
+            return hold("LLM выключен (нет ключа API)", context.get("exposure", 0.0))
+        try:
+            news = self.client.search_summary(self.search_prompt, "Найди новости по биткоину за последние 24 часа.")
+        except LLMUnavailable as e:
+            log.warning("%s: поиск новостей недоступен: %s", self.family, e)
+            news = "Новости недоступны, опирайся только на рыночную сводку."
+        context["news"] = news
+        return super().decide(candles, context)
+
+
+LLM_STRATEGIES: list[type[Strategy]] = [LLMTechnician, LLMRegime, LLMNews]

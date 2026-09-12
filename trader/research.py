@@ -92,15 +92,22 @@ class StrategyLab:
         self.fee_rate = fee_rate
         self.max_combos = max_combos
 
-    def research(self, candles: list[Candle], families: list[str] | None = None, top_n: int = 5) -> list[BacktestResult]:
+    def research(self, candles: list[Candle], families: list[str] | None = None, top_n: int = 5,
+                 exclude: set[str] | None = None) -> list[BacktestResult]:
+        """exclude — ключи "семейство|params" уже работающих агентов, их не предлагаем повторно."""
         families = families or [s.family for s in RULE_STRATEGIES]
         results: list[BacktestResult] = []
         for fam in families:
             for params in grid(fam, self.max_combos):
+                if exclude and combo_key(fam, params) in exclude:
+                    continue
                 strat = build_strategy(fam, params)
                 results.append(backtest(strat, candles, fee_rate=self.fee_rate))
         results.sort(key=lambda r: r.score(), reverse=True)
         return results[:top_n]
+
+    def families_count(self) -> list[str]:
+        return [s.family for s in RULE_STRATEGIES]
 
     def best_params(self, family: str, candles: list[Candle]) -> BacktestResult:
         best: BacktestResult | None = None
@@ -110,6 +117,11 @@ class StrategyLab:
                 best = r
         assert best is not None
         return best
+
+
+def combo_key(family: str, params: dict) -> str:
+    import json
+    return f"{family}|{json.dumps(params, sort_keys=True)}"
 
 
 def result_to_dict(r: BacktestResult) -> dict:

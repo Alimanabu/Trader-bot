@@ -4,8 +4,8 @@
   const sign = (n) => (n > 0 ? "+" : "") + fmt(n);
   const cls = (n) => (n > 0 ? "up" : n < 0 ? "down" : "muted");
   const time = (ts) => new Date(ts * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
-  const STATUS = { active: "работает", paused: "пауза", fired: "уволен", bench: "запас" };
-  const KIND = { fire: "увольнение", hire: "найм", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
+  const STATUS = { active: "работает", paused: "пауза", fired: "уволен", intern: "стажёр", dropped: "отчислен" };
+  const KIND = { fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
 
   let state = null;
 
@@ -21,7 +21,7 @@
       <div class="stat"><div class="label">Капитал</div><div class="value">${fmt(d.equity)} $</div></div>
       <div class="stat"><div class="label">Результат</div><div class="value ${cls(d.pnl)}">${sign(d.pnl)} $</div></div>
       <div class="stat"><div class="label">BTC</div><div class="value">${fmt(s.price, 0)} $</div></div>
-      <div class="stat"><div class="label">Агентов</div><div class="value">${d.agents_active}<span class="muted" style="font-size:13px"> активны${d.agents_paused ? `, ${d.agents_paused} на паузе` : ""}</span></div></div>
+      <div class="stat"><div class="label">Агентов</div><div class="value">${d.agents_active}<span class="muted" style="font-size:13px"> из ${s.team_size}${d.agents_paused ? `, ${d.agents_paused} на паузе` : ""}</span></div></div>
       <div class="stat"><div class="label">Нейросеть</div><div class="value" style="font-size:15px">${s.llm ? "подключена" : "нет ключа, 2 агента ждут"}</div></div>`;
     $("#meta").textContent = `${s.symbol} ${s.timeframe} · ${s.market} · последняя свеча ${s.last_tick_ts ? time(s.last_tick_ts) : "—"}` + (s.error ? ` · ошибка: ${s.error}` : "");
     $("#dot").className = "dot " + (s.error ? "err" : "ok");
@@ -61,6 +61,15 @@
       await api(`/api/approvals/${b.dataset.id}/${b.dataset.d}`, { method: "POST" });
       refresh();
     }));
+  }
+
+  function renderInterns(s) {
+    $("#interns-count").textContent = `${s.interns.length} из ${s.intern_count}`;
+    if (!s.interns.length) { $("#interns").innerHTML = `<span class="muted">Стажёры появятся после ближайшего часа.</span>`; return; }
+    $("#interns").innerHTML = `<div style="overflow-x:auto"><table><tr><th>Стажёр</th><th>Стратегия</th><th>Дней</th><th>Всего</th><th>Просадка</th><th>Сделок</th><th>В BTC</th></tr>` +
+      s.interns.map((a) => `<tr class="agent-row" data-name="${a.name}" style="cursor:pointer"><td>${a.name}</td><td class="muted">${a.strategy}</td><td>${a.days}</td>
+        <td class="${cls(a.pnl_total)}">${sign(a.pnl_total)} $</td><td>${fmt(a.drawdown * 100, 1)}%</td><td>${a.trades}</td><td>${fmt(a.exposure * 100, 0)}%</td></tr>`).join("") + "</table></div>";
+    document.querySelectorAll(".agent-row").forEach((el) => el.addEventListener("click", () => openAgent(el.dataset.name)));
   }
 
   function renderBench(s) {
@@ -112,7 +121,7 @@
       <h2>Последние решения</h2>
       <table><tr><th>Время</th><th>Решение</th><th>Доля</th><th>Цена</th><th>Через 4ч</th><th>Обоснование</th></tr>
       ${d.decisions.map((x) => `<tr><td>${time(x.ts)}</td><td>${x.action}${x.executed ? "" : ` <span class="tag">${x.blocked_by || "не исполнено"}</span>`}</td><td>${fmt(x.target_exposure * 100, 0)}%</td><td>${fmt(x.price, 0)}</td><td class="${cls(x.outcome_pct)}">${x.outcome_pct == null ? "—" : sign(x.outcome_pct) + "%"}</td><td>${x.reason}</td></tr>`).join("")}</table>
-      ${a.status !== "fired" ? `<p><button class="danger" id="modal-fire">Уволить агента</button></p>` : ""}`;
+      ${a.status !== "fired" && a.status !== "dropped" ? `<p><button class="danger" id="modal-fire">${a.status === "intern" ? "Отчислить стажёра" : "Уволить агента"}</button></p>` : ""}`;
     $("#modal").classList.add("open");
     $("#modal-close").onclick = () => $("#modal").classList.remove("open");
     const f = $("#modal-fire");
@@ -122,7 +131,7 @@
   async function refresh() {
     try {
       state = await api("/api/state");
-      renderSummary(state); renderAgents(state); renderApprovals(state); renderBench(state); renderEvents(state);
+      renderSummary(state); renderAgents(state); renderApprovals(state); renderInterns(state); renderBench(state); renderEvents(state);
       drawChart();
     } catch (e) {
       $("#meta").textContent = "нет связи с сервером: " + e.message;

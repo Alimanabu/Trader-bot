@@ -21,7 +21,22 @@ DEFAULT_NAMES = {
     "vol_regime": "Волатильность (ATR)",
     "llm_technician": "Нейро-технарь",
     "llm_regime": "Нейро-стратег",
+    "llm_news": "Нейро-новостник",
 }
+
+# Понятные имена для семейств, которые приходят из отдела исследований.
+FAMILY_LABELS = {
+    "zscore": "Z-score",
+    "rsi_divergence": "Дивергенция RSI",
+    "supertrend": "Supertrend",
+    "keltner": "Кельтнер",
+    "mtf": "Два таймфрейма",
+    "seasonality": "Сезонность",
+}
+
+
+def family_label(family: str) -> str:
+    return DEFAULT_NAMES.get(family) or FAMILY_LABELS.get(family) or family
 
 
 def build_strategy(family: str, params: dict | None = None, client: ClaudeClient | None = None) -> Strategy:

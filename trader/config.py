@@ -43,8 +43,10 @@ class Settings:
     db_path: str = "data/trader.db"
     port: int = 8080
     panel_password: str = ""
-    history_candles: int = 500
-    bench_size: int = 3
+    history_candles: int = 800
+    bench_size: int = 30
+    team_size: int = 11
+    intern_count: int = 20
     research_lookback: int = 720
     retune_every_hours: int = 168
     extra: dict = field(default_factory=dict)
@@ -74,8 +76,10 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         db_path=env.get("DB_PATH", "data/trader.db"),
         port=int(env.get("PORT", "8080")),
         panel_password=env.get("PANEL_PASSWORD", ""),
-        history_candles=int(env.get("HISTORY_CANDLES", "500")),
-        bench_size=int(env.get("BENCH_SIZE", "3")),
+        history_candles=int(env.get("HISTORY_CANDLES", "800")),
+        bench_size=int(env.get("BENCH_SIZE", "30")),
+        team_size=int(env.get("TEAM_SIZE", "11")),
+        intern_count=int(env.get("INTERN_COUNT", "20")),
         research_lookback=int(env.get("RESEARCH_LOOKBACK", "720")),
         retune_every_hours=int(env.get("RETUNE_EVERY_HOURS", "168")),
     )

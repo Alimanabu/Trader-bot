@@ -11,20 +11,22 @@ def make_engine(settings, seed=3, db=None):
 
 def test_engine_creates_department(settings):
     eng, _ = make_engine(settings)
-    assert len(eng.agents) == 10
+    assert len(eng.agents) == 11
     assert all(a.status == "active" for a in eng.agents)
 
 
 def test_tick_records_decisions_and_skips_duplicate(settings):
     eng, market = make_engine(settings)
     res = eng.tick()
-    assert res["ok"] and len(res["decisions"]) == 10
+    assert res["ok"] and len(res["decisions"]) == 11
+    assert len(res["interns_added"]) == settings.intern_count
     again = eng.tick()
     assert again.get("skipped")
     market.advance(1)
     res2 = eng.tick()
     assert res2["ok"] and not res2.get("skipped")
-    assert len(eng.j.recent_decisions(None, 100)) == 20
+    team_decisions = [d for d in eng.j.recent_decisions(None, 500) if d["agent"] in {a.name for a in eng.agents if a.status == "active"}]
+    assert len(team_decisions) == 22
 
 
 def test_state_persists_between_engines(settings):
@@ -49,12 +51,12 @@ def test_team_size_stays_ten_after_firing(settings):
     for _ in range(12):
         eng.tick()
         market.advance(1)
-    alive = [a for a in eng.agents if a.status != "fired"]
+    team = [a for a in eng.agents if a.status in {"active", "paused"}]
     fired = [a for a in eng.agents if a.status == "fired"]
     assert fired, "ожидались увольнения"
-    assert len(alive) == 10
-    kinds = {e["kind"] for e in eng.j.recent_events(200)}
-    assert {"fire", "hire", "research"} <= kinds
+    assert len(team) == 11
+    kinds = {e["kind"] for e in eng.j.recent_events(500)}
+    assert {"fire", "hire", "research", "intern"} <= kinds
 
 
 def test_manual_approval_flow(settings):
@@ -68,9 +70,9 @@ def test_manual_approval_flow(settings):
         market.advance(1)
     pend = eng.j.pending_approvals()
     assert pend and pend[0]["kind"] == "hire"
-    before = len([a for a in eng.agents if a.status != "fired"])
+    before = len([a for a in eng.agents if a.status in {"active", "paused"}])
     eng.apply_approval(pend[0]["id"], True)
-    assert len([a for a in eng.agents if a.status != "fired"]) == before + 1
+    assert len([a for a in eng.agents if a.status in {"active", "paused"}]) == before + 1
 
 
 def test_trades_restored_after_restart(settings):
@@ -84,3 +86,47 @@ def test_trades_restored_after_restart(settings):
     eng2 = Engine(settings, market=market, journal=db, client=ClaudeClient(None))
     assert {a.name: len(a.account.trades) for a in eng2.agents} == counts
     assert eng2.state()["department"]["equity"] == eng.state()["department"]["equity"]
+
+
+def test_interns_shadow_and_new_default_agent_backfilled(settings):
+    settings.intern_count = 5
+    db = Journal(":memory:")
+    eng, market = make_engine(settings, db=db)
+    for _ in range(5):
+        eng.tick()
+        market.advance(1)
+    interns = [a for a in eng.agents if a.status == "intern"]
+    assert len(interns) == 5
+    st = eng.state()
+    assert len(st["interns"]) == 5
+    assert all(a["status"] != "intern" for a in st["agents"])
+    assert st["department"]["start"] == 11 * settings.agent_start_balance
+    # имитируем появление нового штатного семейства: удаляем запись из БД и перезагружаем
+    db._exec("DELETE FROM agents WHERE strategy='llm_news'")
+    eng2 = Engine(settings, market=market, journal=db, client=ClaudeClient(None))
+    assert any(a.strategy.family == "llm_news" for a in eng2.agents)
+    assert len([a for a in eng2.agents if a.status == "intern"]) == 5
+
+
+def test_promotion_approval(settings):
+    settings.intern_count = 3
+    eng, market = make_engine(settings)
+    for _ in range(3):
+        eng.tick()
+        market.advance(1)
+    price = eng.last_price
+    team = [a for a in eng.agents if a.status == "active"]
+    worst = team[0]
+    worst.hired_at -= 20 * 86400
+    worst.account.cash -= 50   # в минусе
+    intern = next(a for a in eng.agents if a.status == "intern")
+    intern.hired_at -= 20 * 86400
+    intern.account.cash += 30
+    eng.j.kv_set("review_day", "")
+    eng.head.review(eng.agents, price, eng.last_tick_ts)
+    pend = [p for p in eng.j.pending_approvals() if p["kind"] == "promote"]
+    assert pend and pend[0]["details"]["agent"] == worst.name and pend[0]["details"]["intern"] == intern.name
+    eng.apply_approval(pend[0]["id"], True)
+    assert worst.status == "fired"
+    assert intern.status == "active"
+    assert abs(intern.equity(price) - settings.agent_start_balance) < 1e-6

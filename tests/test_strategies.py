@@ -27,5 +27,5 @@ def test_llm_strategy_holds_without_key(candles):
     assert "LLM" in sig.reason
 
 
-def test_registry_has_ten_families():
-    assert len(STRATEGY_FAMILIES) == 10
+def test_registry_has_all_families():
+    assert len(STRATEGY_FAMILIES) == 17

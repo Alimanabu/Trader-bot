@@ -176,7 +176,13 @@ class Journal:
         self._exec("UPDATE agents SET status='fired', fired_at=? WHERE name=?", (ts, name))
 
     def load_agents(self) -> list[dict]:
-        return self._rows("SELECT * FROM agents WHERE status != 'fired'")
+        return self._rows("SELECT * FROM agents WHERE status NOT IN ('fired', 'dropped')")
+
+    def set_status(self, name: str, status: str, ts: int | None = None) -> None:
+        if status in {"fired", "dropped"}:
+            self._exec("UPDATE agents SET status=?, fired_at=? WHERE name=?", (status, ts or int(time.time()), name))
+        else:
+            self._exec("UPDATE agents SET status=? WHERE name=?", (status, name))
 
     def all_agents(self) -> list[dict]:
         return self._rows("SELECT * FROM agents ORDER BY hired_at")
@@ -196,9 +202,12 @@ class Journal:
             r["stats"] = json.loads(r["stats"])
         return rows
 
-    def take_from_bench(self, exclude_families: set[str] | None = None) -> dict | None:
+    def take_from_bench(self, exclude: set[str] | None = None) -> dict | None:
+        """Взять лучшего кандидата. exclude — множество ключей "семейство|params", уже занятых."""
         for r in self.bench():
-            if exclude_families and r["strategy"] in exclude_families:
+            key = f"{r['strategy']}|{json.dumps(r['params'], sort_keys=True)}"
+            if exclude and key in exclude:
+                self._exec("UPDATE bench SET used=1 WHERE id=?", (r["id"],))
                 continue
             self._exec("UPDATE bench SET used=1 WHERE id=?", (r["id"],))
             return r

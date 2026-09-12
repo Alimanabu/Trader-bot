@@ -77,3 +77,34 @@ class ClaudeClient:
             return json.loads(text)
         except json.JSONDecodeError as e:
             raise LLMUnavailable(f"ответ не является JSON: {e}") from e
+
+    def search_summary(self, system: str, user: str, max_searches: int = 3, max_tokens: int = 4000) -> str:
+        """Запрос с серверным веб-поиском. Возвращает итоговый текст модели."""
+        if not self._client:
+            raise LLMUnavailable("ANTHROPIC_API_KEY не задан")
+        import anthropic
+
+        messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
+        tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": max_searches}]
+        try:
+            for _ in range(4):
+                response = self._client.messages.create(
+                    model=self.model, max_tokens=max_tokens, system=system, messages=messages,
+                    tools=tools, thinking={"type": "adaptive"}, output_config={"effort": "low"},
+                )
+                if response.stop_reason == "pause_turn":
+                    messages.append({"role": "assistant", "content": response.content})
+                    continue
+                break
+        except anthropic.RateLimitError as e:
+            raise LLMUnavailable(f"лимит запросов: {e.message}") from e
+        except anthropic.APIConnectionError as e:
+            raise LLMUnavailable(f"нет связи с API: {e}") from e
+        except anthropic.APIStatusError as e:
+            raise LLMUnavailable(f"ошибка API {e.status_code}: {e.message}") from e
+        if response.stop_reason == "refusal":
+            raise LLMUnavailable("модель отказалась отвечать")
+        text = "\n".join(b.text for b in response.content if b.type == "text").strip()
+        if not text:
+            raise LLMUnavailable("поиск не вернул текста")
+        return text
