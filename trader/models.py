@@ -67,3 +67,6 @@ class AgentSnapshot:
     hired_at: int
     params: dict
     last_reason: str = ""
+    last_action: str = ""
+    last_trade_ts: int = 0
+    description: str = ""

@@ -1,4 +1,4 @@
-const CACHE = "btc-dept-v1";
+const CACHE = "btc-dept-v2";
 const SHELL = ["/", "/static/app.js", "/static/style.css", "/static/icon.svg", "/manifest.json"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)));

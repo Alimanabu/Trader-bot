@@ -128,6 +128,9 @@ class Agent:
             hired_at=self.hired_at,
             params=dict(self.strategy.params),
             last_reason=(self.last_signal.reason if self.last_signal else ""),
+            last_action=(self.last_signal.action.value if self.last_signal else ""),
+            last_trade_ts=(self.account.trades[-1].ts if self.account.trades else 0),
+            description=self.strategy.description,
         )
 
 

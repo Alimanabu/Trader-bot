@@ -1,149 +1,373 @@
 (() => {
-  const $ = (s) => document.querySelector(s);
-  const fmt = (n, d = 2) => (n == null ? "—" : Number(n).toLocaleString("ru-RU", { minimumFractionDigits: d, maximumFractionDigits: d }));
-  const sign = (n) => (n > 0 ? "+" : "") + fmt(n);
+  // ---------- утилиты ----------
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const fmt = (n, d = 2) => (n == null || isNaN(n) ? "—" : Number(n).toLocaleString("ru-RU", { minimumFractionDigits: d, maximumFractionDigits: d }));
+  const sign = (n, d = 2) => (n > 0 ? "+" : "") + fmt(n, d);
   const cls = (n) => (n > 0 ? "up" : n < 0 ? "down" : "muted");
   const time = (ts) => new Date(ts * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const date = (ts) => new Date(ts * 1000).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const STATUS = { active: "работает", paused: "пауза", fired: "уволен", intern: "стажёр", dropped: "отчислен" };
   const KIND = { fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
 
-  let state = null;
+  const TABS = ["home", "team", "interns", "lab", "reports"];
+  let state = null, tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "home", equityData = null, summary = null, families = null, range = "all";
+  let office = null;
 
   async function api(path, opts) {
     const r = await fetch(path, opts);
-    if (!r.ok) throw new Error(await r.text());
+    if (!r.ok) throw new Error((await r.text()) || r.status);
     return r.json();
   }
 
-  function renderSummary(s) {
+  // ---------- шапка ----------
+  function renderTop(s) {
     const d = s.department;
-    $("#summary").innerHTML = `
-      <div class="stat"><div class="label">Капитал</div><div class="value">${fmt(d.equity)} $</div></div>
-      <div class="stat"><div class="label">Результат</div><div class="value ${cls(d.pnl)}">${sign(d.pnl)} $</div></div>
-      <div class="stat"><div class="label">BTC</div><div class="value">${fmt(s.price, 0)} $</div></div>
-      <div class="stat"><div class="label">Агентов</div><div class="value">${d.agents_active}<span class="muted" style="font-size:13px"> из ${s.team_size}${d.agents_paused ? `, ${d.agents_paused} на паузе` : ""}</span></div></div>
-      <div class="stat"><div class="label">Нейросеть</div><div class="value" style="font-size:15px">${s.llm ? "подключена" : "нет ключа, 2 агента ждут"}</div></div>`;
-    $("#meta").textContent = `${s.symbol} ${s.timeframe} · ${s.market} · последняя свеча ${s.last_tick_ts ? time(s.last_tick_ts) : "—"}` + (s.error ? ` · ошибка: ${s.error}` : "");
+    $("#meta").textContent = `${s.symbol} ${s.timeframe} · ${s.market} · свеча ${s.last_tick_ts ? time(s.last_tick_ts) : "—"}` + (s.error ? ` · ${s.error}` : "") + (d.halted ? " · ОТДЕЛ ОСТАНОВЛЕН" : "");
     $("#dot").className = "dot " + (s.error ? "err" : "ok");
-    if (d.halted) $("#meta").textContent += " · ОТДЕЛ ОСТАНОВЛЕН ДО КОНЦА ДНЯ";
   }
 
-  function renderAgents(s) {
-    $("#agents").innerHTML = s.agents
-      .filter((a) => a.status !== "fired")
-      .concat(s.agents.filter((a) => a.status === "fired"))
-      .map((a) => `
-      <div class="card agent" data-name="${a.name}">
-        <div class="head"><span class="name">${a.name}</span><span class="badge ${a.status}">${STATUS[a.status] || a.status}</span></div>
-        <div class="strategy">${a.strategy}</div>
-        <div class="row"><span>Капитал</span><b>${fmt(a.equity)} $</b></div>
-        <div class="row"><span>Всего</span><b class="${cls(a.pnl_total)}">${sign(a.pnl_total)} $</b></div>
-        <div class="row"><span>Сегодня</span><b class="${cls(a.pnl_day)}">${sign(a.pnl_day)} $</b></div>
-        <div class="row"><span>Просадка</span><span>${fmt(a.drawdown * 100, 1)}%</span></div>
-        <div class="row"><span>Сделок · побед</span><span>${a.trades} · ${fmt(a.win_rate * 100, 0)}%</span></div>
-        <div class="row"><span>В BTC</span><span>${fmt(a.exposure * 100, 0)}%</span></div>
-        <div class="bar"><i style="width:${Math.round(a.exposure * 100)}%"></i></div>
-        <div class="reason" title="${a.last_reason}">${a.last_reason || ""}</div>
-      </div>`).join("");
-    document.querySelectorAll(".agent").forEach((el) => el.addEventListener("click", () => openAgent(el.dataset.name)));
+  // ---------- главная ----------
+  function heroHTML(s) {
+    const d = s.department;
+    const pct = d.start ? (d.pnl / d.start) * 100 : 0;
+    const team = s.agents.filter((a) => a.status !== "fired");
+    const day = team.reduce((x, a) => x + a.pnl_day, 0);
+    return `<section class="hero fade">
+      <div class="label">Капитал отдела · демосчёт</div>
+      <div class="big num">${fmt(d.equity)} <small>$</small></div>
+      <div class="sub num">BTC ${fmt(s.price, 0)} $ · ${team.length} из ${s.team_size} агентов · ${s.interns.length} стажёров</div>
+      <div class="delta num ${cls(day)}">${sign(day)} $ <span>за сегодня</span></div>
+      <div class="delta num ${cls(d.pnl)}">${sign(d.pnl)} $ (${sign(pct, 2)}%) <span>за всё время</span></div>
+    </section>`;
   }
 
-  function renderApprovals(s) {
-    const block = $("#approvals-block");
-    if (!s.approvals.length) { block.hidden = true; return; }
-    block.hidden = false;
-    $("#approvals").innerHTML = s.approvals.map((p) => `
-      <div class="card approval">
-        <div><b>${p.title}</b><div class="note">${time(p.ts)} · ${JSON.stringify(p.details).slice(0, 160)}</div></div>
-        <div class="actions"><button class="primary" data-id="${p.id}" data-d="approve">Одобрить</button><button data-id="${p.id}" data-d="reject">Отклонить</button></div>
-      </div>`).join("");
-    document.querySelectorAll("#approvals button").forEach((b) => b.addEventListener("click", async () => {
-      await api(`/api/approvals/${b.dataset.id}/${b.dataset.d}`, { method: "POST" });
-      refresh();
-    }));
+  function allocHTML(s) {
+    const team = s.agents.filter((a) => a.status !== "fired");
+    const btc = team.reduce((x, a) => x + a.equity * a.exposure, 0);
+    const total = team.reduce((x, a) => x + a.equity, 0) || 1;
+    const usdt = total - btc;
+    const r = 52, c = 2 * Math.PI * r, pb = btc / total;
+    const rows = [...team].sort((a, b) => b.equity - a.equity).map((a) => `
+      <div class="row link" data-name="${esc(a.name)}"><i style="background:${a.exposure > 0.5 ? "var(--btc)" : "var(--usdt)"}"></i>
+        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.name)}</span>
+        <b class="num">${fmt(a.equity, 0)} $</b><span class="pct num">${fmt((a.equity / total) * 100, 1)}%</span></div>`).join("");
+    return `<div class="card fade"><h3>Распределение капитала</h3>
+      <div class="alloc">
+        <svg viewBox="0 0 130 130" role="img" aria-label="Доля BTC и USDT">
+          <circle cx="65" cy="65" r="${r}" fill="none" stroke="var(--card2)" stroke-width="14"/>
+          <circle cx="65" cy="65" r="${r}" fill="none" stroke="var(--btc)" stroke-width="14" stroke-dasharray="${c * pb} ${c}" stroke-dashoffset="${c / 4}" stroke-linecap="butt"/>
+          <text x="65" y="61" text-anchor="middle" fill="var(--text)" font-size="15" font-weight="700">${fmt(pb * 100, 0)}%</text>
+          <text x="65" y="78" text-anchor="middle" fill="var(--muted)" font-size="10">в BTC</text>
+        </svg>
+        <div class="rows">
+          <div class="row"><i style="background:var(--btc)"></i><span>В биткоине</span><b class="num">${fmt(btc, 0)} $</b><span class="pct num">${fmt(pb * 100, 1)}%</span></div>
+          <div class="row"><i style="background:var(--usdt)"></i><span>В долларах (USDT)</span><b class="num">${fmt(usdt, 0)} $</b><span class="pct num">${fmt((1 - pb) * 100, 1)}%</span></div>
+          <div class="note" style="margin-top:4px">По агентам (точка оранжевая, если агент больше чем наполовину в BTC):</div>
+          ${rows}
+        </div></div></div>`;
   }
 
-  function renderInterns(s) {
-    $("#interns-count").textContent = `${s.interns.length} из ${s.intern_count}`;
-    if (!s.interns.length) { $("#interns").innerHTML = `<span class="muted">Стажёры появятся после ближайшего часа.</span>`; return; }
-    $("#interns").innerHTML = `<div style="overflow-x:auto"><table><tr><th>Стажёр</th><th>Стратегия</th><th>Дней</th><th>Всего</th><th>Просадка</th><th>Сделок</th><th>В BTC</th></tr>` +
-      s.interns.map((a) => `<tr class="agent-row" data-name="${a.name}" style="cursor:pointer"><td>${a.name}</td><td class="muted">${a.strategy}</td><td>${a.days}</td>
-        <td class="${cls(a.pnl_total)}">${sign(a.pnl_total)} $</td><td>${fmt(a.drawdown * 100, 1)}%</td><td>${a.trades}</td><td>${fmt(a.exposure * 100, 0)}%</td></tr>`).join("") + "</table></div>";
-    document.querySelectorAll(".agent-row").forEach((el) => el.addEventListener("click", () => openAgent(el.dataset.name)));
+  function homeHTML(s) {
+    return heroHTML(s) + `
+      <div class="card office fade"><h3>Как работает отдел прямо сейчас</h3>
+        <canvas id="office"></canvas>
+        <div class="legend"><span><i style="background:var(--usdt)"></i>котировки с биржи</span><span><i style="background:var(--up)"></i>агент в плюсе</span><span><i style="background:var(--down)"></i>агент в минусе</span><span><i style="background:var(--btc)"></i>сделка через риск-менеджера</span><span><i style="background:var(--violet)"></i>стажёры и исследования</span></div>
+        <div class="note" style="margin-top:6px">Нажмите на агента, чтобы открыть его карточку.</div></div>
+      <div class="card chart fade"><h3>Капитал отдела</h3>
+        <div class="range"><button data-r="day" class="${range === "day" ? "active" : ""}">День</button><button data-r="week" class="${range === "week" ? "active" : ""}">Неделя</button><button data-r="all" class="${range === "all" ? "active" : ""}">Всё время</button></div>
+        <canvas id="chart"></canvas><div class="tip" id="tip"></div><div class="note" id="chart-note"></div></div>
+      ${allocHTML(s)}
+      ${approvalsHTML(s)}
+      <div class="card fade"><h3>Последние события</h3><ul class="events">${eventsHTML(s.events.slice(0, 8))}</ul></div>`;
   }
 
-  function renderBench(s) {
-    if (!s.bench.length) { $("#bench").innerHTML = `<span class="muted">Скамейка пуста. Нажмите «Исследование», чтобы подобрать кандидатов.</span>`; return; }
-    $("#bench").innerHTML = `<table><tr><th>Стратегия</th><th>Параметры</th><th>Доходность</th><th>Просадка</th><th>Sharpe</th><th>Оценка</th></tr>` +
-      s.bench.map((b) => `<tr><td>${b.strategy}</td><td>${Object.entries(b.params).map(([k, v]) => `<span class="tag">${k}=${v}</span>`).join("")}</td>
-        <td class="${cls(b.stats.return_pct)}">${sign(b.stats.return_pct)}%</td><td>${fmt(b.stats.max_drawdown_pct, 1)}%</td><td>${fmt(b.stats.sharpe, 2)}</td><td>${fmt(b.score, 2)}</td></tr>`).join("") + "</table>";
+  // ---------- команда ----------
+  function agentCard(a) {
+    return `<div class="card agent" data-name="${esc(a.name)}">
+      <div class="head"><span class="name">${esc(a.name)}</span><span class="badge ${a.status}">${STATUS[a.status] || a.status}</span></div>
+      <div class="strategy">${esc(a.description || a.strategy)}</div>
+      <div class="row"><span>Капитал</span><b class="num">${fmt(a.equity)} $</b></div>
+      <div class="row"><span>Всего</span><b class="num ${cls(a.pnl_total)}">${sign(a.pnl_total)} $</b></div>
+      <div class="row"><span>Сегодня</span><b class="num ${cls(a.pnl_day)}">${sign(a.pnl_day)} $</b></div>
+      <div class="row"><span>Просадка · сделок</span><span class="num">${fmt(a.drawdown * 100, 1)}% · ${a.trades}</span></div>
+      <div class="row"><span>В BTC</span><span class="num">${fmt(a.exposure * 100, 0)}%</span></div>
+      <div class="bar"><i style="width:${Math.round(a.exposure * 100)}%"></i></div>
+      <div class="reason" title="${esc(a.last_reason)}">${esc(a.last_reason || "")}</div></div>`;
+  }
+  function teamHTML(s) {
+    const alive = s.agents.filter((a) => a.status !== "fired");
+    const fired = s.agents.filter((a) => a.status === "fired");
+    const sorted = [...alive].sort((a, b) => b.pnl_total - a.pnl_total);
+    return `<h2 class="sec">Команда · ${alive.length} из ${s.team_size}</h2>
+      <div class="note" style="margin-bottom:8px">Каждый агент торгует своими 1000 $ по своей теории. Отсортированы по результату за всё время. Решения раз в час, через риск-менеджера.</div>
+      <div class="grid">${sorted.map(agentCard).join("")}</div>
+      ${fired.length ? `<h2 class="sec">Уволенные · ${fired.length}</h2><div class="grid">${fired.map(agentCard).join("")}</div>` : ""}`;
   }
 
-  function renderEvents(s) {
-    $("#events").innerHTML = s.events.map((e) => `<li><time>${time(e.ts)}</time><span class="kind ${e.kind}">${KIND[e.kind] || e.kind}</span><span>${e.message}</span></li>`).join("");
+  // ---------- стажёры ----------
+  function internsHTML(s) {
+    const rows = s.interns.map((a) => `<tr class="link" data-name="${esc(a.name)}"><td>${esc(a.name)}</td><td class="muted">${esc(a.strategy)}</td><td class="r num">${a.days}</td>
+      <td class="r num ${cls(a.pnl_total)}">${sign(a.pnl_total)} $</td><td class="r num">${fmt(a.drawdown * 100, 1)}%</td><td class="r num">${a.trades}</td><td class="r num">${fmt(a.exposure * 100, 0)}%</td></tr>`).join("");
+    const ready = s.interns.filter((a) => a.days >= 14).length;
+    return `<h2 class="sec">Стажёры · ${s.interns.length} из ${s.intern_count}</h2>
+      <div class="card"><div class="stat">
+        <div><div class="k">Торгуют в тени</div><div class="v num">${s.interns.length}</div></div>
+        <div><div class="k">Прошли 14 дней</div><div class="v num">${ready}</div></div>
+        <div><div class="k">Лучший</div><div class="v num ${cls(s.interns[0]?.pnl_total)}">${s.interns[0] ? sign(s.interns[0].pnl_total) + " $" : "—"}</div></div>
+      </div>
+      <div class="note" style="margin-top:10px">Стажёров подбирает отдел исследований из ${families ? families.filter((f) => !f.llm).length : "14"} семейств стратегий. Они торгуют на своих демосчетах и не входят в капитал отдела. Через 14 дней лучший стажёр предлагается на замену худшему в команде, а при увольнении занимает место сразу. Просадка 10% отчисляет стажёра, его место занимает новый кандидат.</div></div>
+      <div class="card"><h3>Рейтинг стажёров</h3>${s.interns.length ? `<div class="tbl"><table><tr><th>Стажёр</th><th>Стратегия</th><th class="r">Дней</th><th class="r">Всего</th><th class="r">Просадка</th><th class="r">Сделок</th><th class="r">В BTC</th></tr>${rows}</table></div>` : `<div class="note">Стажёры появятся после ближайшего часа.</div>`}</div>`;
   }
 
-  async function drawChart() {
-    const data = await api("/api/equity");
-    const canvas = $("#chart");
-    const dpr = window.devicePixelRatio || 1;
-    const W = canvas.clientWidth, H = canvas.clientHeight;
-    canvas.width = W * dpr; canvas.height = H * dpr;
+  // ---------- наука ----------
+  function labHTML(s) {
+    const bench = s.bench || [];
+    const fam = families || [];
+    const ev = s.events.filter((e) => ["retune", "lesson", "research", "intern", "drop"].includes(e.kind)).slice(0, 15);
+    return `<h2 class="sec">Отдел исследований и обучения</h2>
+      <div class="card"><div class="stat">
+        <div><div class="k">Семейств стратегий</div><div class="v num">${fam.length}</div></div>
+        <div><div class="k">На правилах</div><div class="v num">${fam.filter((f) => !f.llm).length}</div></div>
+        <div><div class="k">С нейросетью</div><div class="v num">${fam.filter((f) => f.llm).length}</div></div>
+        <div><div class="k">Кандидатов</div><div class="v num">${bench.length}</div></div>
+      </div>
+      <div class="note" style="margin-top:10px">Что делает отдел: перебирает семейства и их параметры на реальной истории за 30 дней, отбирает кандидатов в стажёры, раз в неделю перепроверяет параметры команды, а из ошибок нейро-агентов раз в сутки формулирует уроки.</div>
+      <div style="margin-top:10px"><button class="btn" id="btn-research">Запустить исследование</button></div></div>
+      <div class="card"><h3>Кандидаты (лучшие по бэктесту)</h3>${bench.length ? `<div class="tbl"><table><tr><th>Семейство</th><th>Параметры</th><th class="r">Доход</th><th class="r">Просадка</th><th class="r">Оценка</th></tr>` +
+        bench.map((b) => `<tr><td>${esc(b.strategy)}</td><td>${Object.entries(b.params).map(([k, v]) => `<span class="tag">${k}=${v}</span>`).join("")}</td><td class="r num ${cls(b.stats.return_pct)}">${sign(b.stats.return_pct, 1)}%</td><td class="r num">${fmt(b.stats.max_drawdown_pct, 1)}%</td><td class="r num">${fmt(b.score, 1)}</td></tr>`).join("") + "</table></div>" : `<div class="note">Кандидаты появятся после исследования.</div>`}</div>
+      <div class="card"><h3>Библиотека стратегий</h3><div class="tbl"><table>${fam.map((f) => `<tr><td><b>${esc(f.label)}</b>${f.llm ? ' <span class="badge intern">нейросеть</span>' : ""}<div class="note">${esc(f.description)}</div></td></tr>`).join("")}</table></div></div>
+      <div class="card"><h3>Журнал обучения</h3><ul class="events">${eventsHTML(ev) || '<li class="muted">пока пусто</li>'}</ul></div>`;
+  }
+
+  // ---------- отчёты ----------
+  function reportsHTML(s) {
+    const sm = summary || { daily: [], reports: [] };
+    const team = s.agents.filter((a) => a.status !== "fired");
+    const day = team.reduce((x, a) => x + a.pnl_day, 0);
+    const bestDay = [...team].sort((a, b) => b.pnl_day - a.pnl_day)[0];
+    const worstDay = [...team].sort((a, b) => a.pnl_day - b.pnl_day)[0];
+    const allRows = [...s.agents].sort((a, b) => b.pnl_total - a.pnl_total).map((a) => `<tr class="link" data-name="${esc(a.name)}"><td>${esc(a.name)} <span class="badge ${a.status}">${STATUS[a.status]}</span></td><td class="r num ${cls(a.pnl_total)}">${sign(a.pnl_total)} $</td><td class="r num ${cls(a.pnl_day)}">${sign(a.pnl_day)} $</td><td class="r num">${a.trades}</td><td class="r num">${fmt(a.win_rate * 100, 0)}%</td><td class="r num">${fmt(a.drawdown * 100, 1)}%</td></tr>`).join("");
+    const daily = [...sm.daily].reverse().map((d) => `<tr><td>${d.day.slice(5).split("-").reverse().join(".")}</td><td class="r num">${fmt(d.equity)} $</td><td class="r num ${cls(d.change)}">${d.change == null ? "—" : sign(d.change) + " $"}</td></tr>`).join("");
+    const reports = sm.reports.map((e) => { let data = {}; try { data = JSON.parse(e.data || "{}"); } catch (_) {} return `<div class="report"><div class="t">${time(e.ts)}</div><div>${esc(e.message)}</div>${(data.recommendations || []).length ? `<ul>${data.recommendations.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}</div>`; }).join("");
+    return `<h2 class="sec">Отчёты</h2>
+      ${approvalsHTML(s)}
+      <div class="card"><h3>Сегодня</h3><div class="stat">
+        <div><div class="k">Результат дня</div><div class="v num ${cls(day)}">${sign(day)} $</div></div>
+        <div><div class="k">Лучший сегодня</div><div class="v" style="font-size:14px">${bestDay ? `${esc(bestDay.name)} <span class="num ${cls(bestDay.pnl_day)}">${sign(bestDay.pnl_day)}</span>` : "—"}</div></div>
+        <div><div class="k">Худший сегодня</div><div class="v" style="font-size:14px">${worstDay ? `${esc(worstDay.name)} <span class="num ${cls(worstDay.pnl_day)}">${sign(worstDay.pnl_day)}</span>` : "—"}</div></div>
+      </div></div>
+      <div class="card"><h3>Отчёты руководителя</h3>${reports || '<div class="note">Первый отчёт появится в конце дня.</div>'}</div>
+      <div class="card"><h3>Капитал по дням</h3>${daily ? `<div class="tbl"><table><tr><th>День</th><th class="r">Капитал</th><th class="r">Изменение</th></tr>${daily}</table></div>` : '<div class="note">Появится после первого дня.</div>'}</div>
+      <div class="card"><h3>За всё время по агентам</h3><div class="tbl"><table><tr><th>Агент</th><th class="r">Всего</th><th class="r">Сегодня</th><th class="r">Сделок</th><th class="r">Побед</th><th class="r">Просадка</th></tr>${allRows}</table></div></div>
+      <div class="card"><h3>Все события</h3><ul class="events">${eventsHTML(s.events)}</ul></div>`;
+  }
+
+  // ---------- общие куски ----------
+  function eventsHTML(list) {
+    return list.map((e) => `<li><time>${time(e.ts)}</time><span class="kind ${e.kind}">${KIND[e.kind] || e.kind}</span><span>${esc(e.message)}</span></li>`).join("");
+  }
+  function approvalsHTML(s) {
+    if (!s.approvals.length) return "";
+    return s.approvals.map((p) => `<div class="card approval fade"><div><b>Нужно ваше решение</b><div>${esc(p.title)}</div><div class="note">${time(p.ts)}${p.details.agent_pnl != null ? ` · агент ${sign(p.details.agent_pnl)} $, стажёр ${sign(p.details.intern_pnl)} $` : p.details.pnl != null ? ` · ${sign(p.details.pnl)} $` : ""}</div></div>
+      <div class="actions"><button class="btn primary" data-id="${p.id}" data-d="approve">Одобрить</button><button class="btn" data-id="${p.id}" data-d="reject">Отклонить</button></div></div>`).join("");
+  }
+
+  // ---------- анимация офиса ----------
+  function startOffice(canvas, s) {
+    if (office) { cancelAnimationFrame(office.raf); office = null; }
     const ctx = canvas.getContext("2d");
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, W, H);
-    // Суммарный капитал отдела по времени (только живые агенты на каждый момент).
-    const byTs = new Map();
-    Object.values(data).forEach((series) => series.forEach((p) => byTs.set(p.ts, (byTs.get(p.ts) || 0) + p.equity)));
-    const pts = [...byTs.entries()].sort((a, b) => a[0] - b[0]);
-    if (pts.length < 2) { $("#chart-note").textContent = "График появится после нескольких часов работы."; return; }
-    const ys = pts.map((p) => p[1]);
-    const min = Math.min(...ys), max = Math.max(...ys), pad = (max - min) * 0.1 || 1;
-    const x = (i) => 8 + (i / (pts.length - 1)) * (W - 16);
-    const y = (v) => H - 8 - ((v - (min - pad)) / (max - min + 2 * pad)) * (H - 16);
-    ctx.strokeStyle = "#262b36"; ctx.lineWidth = 1;
-    [0.25, 0.5, 0.75].forEach((f) => { ctx.beginPath(); ctx.moveTo(0, H * f); ctx.lineTo(W, H * f); ctx.stroke(); });
-    ctx.beginPath(); ctx.strokeStyle = ys[ys.length - 1] >= ys[0] ? "#2ecc71" : "#ff5c5c"; ctx.lineWidth = 2;
-    pts.forEach((p, i) => (i ? ctx.lineTo(x(i), y(p[1])) : ctx.moveTo(x(i), y(p[1]))));
-    ctx.stroke();
-    $("#chart-note").textContent = `${time(pts[0][0])} → ${time(pts[pts.length - 1][0])} · мин ${fmt(min)} · макс ${fmt(max)}`;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    let W = 0, H = 0;
+    const team = s.agents.filter((a) => a.status !== "fired");
+    const interns = s.interns.length;
+    const nodes = {}, agents = [], particles = [];
+    const col = (a) => a.status === "paused" ? "#ffb547" : a.pnl_total > 0.5 ? "#34d27b" : a.pnl_total < -0.5 ? "#ff6b6b" : "#8a93a8";
+    const now = s.now;
+
+    function layout() {
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const mobile = W < 700;
+      const R = mobile ? 15 : 20;
+      nodes.market = { x: mobile ? 32 : 60, y: H * 0.5, r: R, label: "Биржа", color: "#4f8cff" };
+      nodes.risk = { x: W - (mobile ? 32 : 130), y: H * 0.5, r: R, label: "Риск-менеджер", color: "#ffb547" };
+      nodes.book = mobile ? { x: W - 32, y: 26, r: 12, label: "Счёт", color: "#eef1f7" } : { x: W - 55, y: H * 0.5, r: 17, label: "Счёт", color: "#eef1f7" };
+      nodes.head = { x: W / 2, y: 24, r: 13, label: "Руководитель", color: "#eef1f7" };
+      nodes.lab = { x: W / 2, y: H - 36, r: 13, label: `Исследования · ${interns} стажёров`, color: "#9085e9" };
+      const cx = W / 2, cy = H * 0.5, rx = mobile ? W * 0.31 : Math.min(W * 0.27, 200), ry = mobile ? H * 0.28 : Math.min(H * 0.25, 95);
+      agents.length = 0;
+      team.forEach((a, i) => {
+        const t = (i / team.length) * Math.PI * 2 - Math.PI / 2;
+        agents.push({ a, x: cx + rx * Math.cos(t), y: cy + ry * Math.sin(t), r: 8 + 5 * a.exposure, phase: Math.random() * 6 });
+      });
+    }
+
+    function spawn(t) {
+      if (!agents.length) return;
+      // котировки: биржа → случайный агент
+      if (Math.random() < 0.12) { const g = agents[Math.floor(Math.random() * agents.length)]; particles.push({ from: nodes.market, to: g, t: 0, v: 0.008 + Math.random() * 0.006, c: "#4f8cff", r: 2.2 }); }
+      // решения: агент → риск-менеджер
+      if (Math.random() < 0.07) { const g = agents[Math.floor(Math.random() * agents.length)]; particles.push({ from: g, to: nodes.risk, t: 0, v: 0.009, c: col(g.a), r: 2 }); }
+      // сделки: риск → счёт, только у тех, кто торговал за последние 2 часа
+      const traded = agents.filter((g) => g.a.last_trade_ts && now - g.a.last_trade_ts < 7200);
+      if (traded.length && Math.random() < 0.05) particles.push({ from: nodes.risk, to: nodes.book, t: 0, v: 0.012, c: "#f7931a", r: 2.6 });
+      // стажёры вокруг лаборатории, руководитель смотрит на агентов
+      if (Math.random() < 0.03) { const g = agents[Math.floor(Math.random() * agents.length)]; particles.push({ from: nodes.head, to: g, t: 0, v: 0.01, c: "rgba(238,241,247,.6)", r: 1.6 }); }
+    }
+
+    function node(n, t) {
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 4 + Math.sin(t / 700) * 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = n.color.startsWith("#") ? n.color + "22" : "rgba(255,255,255,.08)"; ctx.fill();
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2); ctx.fillStyle = "#1c2130"; ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = n.color; ctx.stroke();
+      ctx.fillStyle = "#8a93a8"; ctx.font = "11px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.textAlign = "center";
+      ctx.fillText(n.label, n.x, n.y + n.r + 14);
+    }
+
+    function draw(t) {
+      ctx.clearRect(0, 0, W, H);
+      // связи
+      ctx.lineWidth = 1; ctx.strokeStyle = "rgba(138,147,168,.18)";
+      agents.forEach((g) => { [nodes.market, nodes.risk].forEach((n) => { ctx.beginPath(); ctx.moveTo(n.x, n.y); ctx.lineTo(g.x, g.y); ctx.stroke(); }); });
+      ctx.beginPath(); ctx.moveTo(nodes.risk.x, nodes.risk.y); ctx.lineTo(nodes.book.x, nodes.book.y); ctx.strokeStyle = "rgba(247,147,26,.35)"; ctx.stroke();
+      // орбита стажёров
+      const orb = Math.min(28, interns ? 26 : 0);
+      for (let i = 0; i < Math.min(interns, 20); i++) {
+        const ang = t / 6000 * Math.PI * 2 + (i / Math.max(1, Math.min(interns, 20))) * Math.PI * 2;
+        const x = nodes.lab.x + Math.cos(ang) * (orb + (i % 2) * 8), y = nodes.lab.y + Math.sin(ang) * (orb * 0.45 + (i % 2) * 4);
+        ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI * 2); ctx.fillStyle = "#9085e9"; ctx.fill();
+      }
+      // частицы
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i]; p.t += p.v; if (p.t >= 1) { particles.splice(i, 1); continue; }
+        const e = p.t < 0.5 ? 2 * p.t * p.t : -1 + (4 - 2 * p.t) * p.t;
+        const x = p.from.x + (p.to.x - p.from.x) * e, y = p.from.y + (p.to.y - p.from.y) * e;
+        ctx.beginPath(); ctx.arc(x, y, p.r, 0, Math.PI * 2); ctx.fillStyle = p.c; ctx.fill();
+      }
+      // узлы
+      [nodes.market, nodes.risk, nodes.book, nodes.head, nodes.lab].forEach((n) => node(n, t));
+      // агенты
+      ctx.font = "10px -apple-system, Segoe UI, Roboto, sans-serif";
+      agents.forEach((g) => {
+        const c = col(g.a), pulse = g.a.exposure > 0 ? 2 + Math.sin(t / 400 + g.phase) * 2 : 0;
+        if (pulse) { ctx.beginPath(); ctx.arc(g.x, g.y, g.r + pulse + 3, 0, Math.PI * 2); ctx.fillStyle = c + "22"; ctx.fill(); }
+        ctx.beginPath(); ctx.arc(g.x, g.y, g.r, 0, Math.PI * 2); ctx.fillStyle = "#141821"; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = c; ctx.stroke();
+        if (g.a.exposure > 0) { ctx.beginPath(); ctx.arc(g.x, g.y, g.r - 4, 0, Math.PI * 2); ctx.fillStyle = "#f7931a"; ctx.globalAlpha = 0.35 + 0.65 * g.a.exposure; ctx.fill(); ctx.globalAlpha = 1; }
+        ctx.fillStyle = "#c9d0dd"; ctx.textAlign = "center";
+        const short = g.a.name.replace(/\s*\(.*\)/, "").replace("Нейро-", "Н-").slice(0, W < 700 ? 11 : 16);
+        ctx.fillText(short, g.x, g.y + g.r + 11);
+      });
+      spawn(t);
+      office.raf = requestAnimationFrame(draw);
+    }
+
+    office = { raf: 0, agents, layout };
+    layout();
+    office.raf = requestAnimationFrame(draw);
+    canvas.onclick = (ev) => {
+      const b = canvas.getBoundingClientRect(); const x = ev.clientX - b.left, y = ev.clientY - b.top;
+      const hit = agents.find((g) => Math.hypot(g.x - x, g.y - y) <= g.r + 8);
+      if (hit) openAgent(hit.a.name);
+    };
   }
 
+  // ---------- график капитала ----------
+  async function drawChart() {
+    const canvas = $("#chart"); if (!canvas) return;
+    if (!equityData) equityData = await api("/api/equity");
+    const byTs = new Map();
+    Object.values(equityData).forEach((series) => series.forEach((p) => byTs.set(p.ts, (byTs.get(p.ts) || 0) + p.equity)));
+    let pts = [...byTs.entries()].sort((a, b) => a[0] - b[0]);
+    const last = pts.length ? pts[pts.length - 1][0] : 0;
+    if (range === "day") pts = pts.filter((p) => p[0] >= last - 86400);
+    if (range === "week") pts = pts.filter((p) => p[0] >= last - 7 * 86400);
+    const note = $("#chart-note");
+    const dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, W, H);
+    if (pts.length < 2) { note.textContent = "График появится после нескольких часов работы."; return; }
+    const ys = pts.map((p) => p[1]); const min = Math.min(...ys), max = Math.max(...ys), pad = (max - min) * 0.15 || 1;
+    const L = 8, R = 8, T = 8, B = 18;
+    const x = (i) => L + (i / (pts.length - 1)) * (W - L - R);
+    const y = (v) => T + (1 - (v - (min - pad)) / (max - min + 2 * pad)) * (H - T - B);
+    ctx.strokeStyle = "#232a3a"; ctx.lineWidth = 1;
+    [0.25, 0.5, 0.75].forEach((f) => { ctx.beginPath(); ctx.moveTo(L, T + (H - T - B) * f); ctx.lineTo(W - R, T + (H - T - B) * f); ctx.stroke(); });
+    const upc = ys[ys.length - 1] >= ys[0];
+    const grad = ctx.createLinearGradient(0, T, 0, H - B); grad.addColorStop(0, upc ? "rgba(52,210,123,.25)" : "rgba(255,107,107,.25)"); grad.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.beginPath(); pts.forEach((p, i) => (i ? ctx.lineTo(x(i), y(p[1])) : ctx.moveTo(x(i), y(p[1])))); ctx.lineTo(x(pts.length - 1), H - B); ctx.lineTo(x(0), H - B); ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
+    ctx.beginPath(); ctx.strokeStyle = upc ? "#34d27b" : "#ff6b6b"; ctx.lineWidth = 2; pts.forEach((p, i) => (i ? ctx.lineTo(x(i), y(p[1])) : ctx.moveTo(x(i), y(p[1])))); ctx.stroke();
+    ctx.fillStyle = "#8a93a8"; ctx.font = "10px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.textAlign = "left"; ctx.fillText(time(pts[0][0]), L, H - 4); ctx.textAlign = "right"; ctx.fillText(time(pts[pts.length - 1][0]), W - R, H - 4);
+    note.textContent = `мин ${fmt(min)} $ · макс ${fmt(max)} $ · изменение за период ${sign(ys[ys.length - 1] - ys[0])} $`;
+    const tip = $("#tip");
+    const onMove = (ev) => {
+      const b = canvas.getBoundingClientRect(); const px = (ev.touches ? ev.touches[0].clientX : ev.clientX) - b.left;
+      const i = Math.max(0, Math.min(pts.length - 1, Math.round(((px - L) / (W - L - R)) * (pts.length - 1))));
+      tip.style.display = "block"; tip.innerHTML = `${time(pts[i][0])}<br><b class="num">${fmt(pts[i][1])} $</b>`;
+      tip.style.left = Math.min(W - 130, Math.max(0, x(i) - 60)) + "px"; tip.style.top = Math.max(0, y(pts[i][1]) - 44) + "px";
+    };
+    canvas.onmousemove = onMove; canvas.ontouchstart = onMove; canvas.ontouchmove = onMove;
+    canvas.onmouseleave = () => (tip.style.display = "none");
+  }
+
+  // ---------- карточка агента ----------
   async function openAgent(name) {
     const d = await api(`/api/agents/${encodeURIComponent(name)}`);
     const a = d.agent;
     $("#modal-box").innerHTML = `
-      <div class="head" style="display:flex;justify-content:space-between;align-items:center"><h1 style="margin:0">${a.name}</h1><button id="modal-close">Закрыть</button></div>
-      <div class="note">${a.strategy} · ${d.description}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div><b style="font-size:18px">${esc(a.name)}</b> <span class="badge ${a.status}">${STATUS[a.status]}</span></div><button class="btn" id="modal-close">Закрыть</button></div>
+      <div class="note" style="margin-top:6px">${esc(d.description)}</div>
       <div class="note">Параметры: ${Object.entries(a.params).map(([k, v]) => `<span class="tag">${k}=${v}</span>`).join("")}</div>
-      <p>Капитал <b>${fmt(a.equity)} $</b> · всего <b class="${cls(a.pnl_total)}">${sign(a.pnl_total)} $</b> · просадка ${fmt(a.drawdown * 100, 1)}% · сделок ${a.trades}</p>
-      ${d.lessons.length ? `<h2>Уроки из журнала</h2><ul>${d.lessons.map((l) => `<li>${l}</li>`).join("")}</ul>` : ""}
-      <h2>Последние решения</h2>
-      <table><tr><th>Время</th><th>Решение</th><th>Доля</th><th>Цена</th><th>Через 4ч</th><th>Обоснование</th></tr>
-      ${d.decisions.map((x) => `<tr><td>${time(x.ts)}</td><td>${x.action}${x.executed ? "" : ` <span class="tag">${x.blocked_by || "не исполнено"}</span>`}</td><td>${fmt(x.target_exposure * 100, 0)}%</td><td>${fmt(x.price, 0)}</td><td class="${cls(x.outcome_pct)}">${x.outcome_pct == null ? "—" : sign(x.outcome_pct) + "%"}</td><td>${x.reason}</td></tr>`).join("")}</table>
-      ${a.status !== "fired" && a.status !== "dropped" ? `<p><button class="danger" id="modal-fire">${a.status === "intern" ? "Отчислить стажёра" : "Уволить агента"}</button></p>` : ""}`;
+      <div class="stat" style="margin-top:12px">
+        <div><div class="k">Капитал</div><div class="v num">${fmt(a.equity)} $</div></div>
+        <div><div class="k">Всего</div><div class="v num ${cls(a.pnl_total)}">${sign(a.pnl_total)} $</div></div>
+        <div><div class="k">Сегодня</div><div class="v num ${cls(a.pnl_day)}">${sign(a.pnl_day)} $</div></div>
+        <div><div class="k">Просадка</div><div class="v num">${fmt(a.drawdown * 100, 1)}%</div></div>
+        <div><div class="k">Сделок · побед</div><div class="v num">${a.trades} · ${fmt(a.win_rate * 100, 0)}%</div></div>
+      </div>
+      ${d.lessons.length ? `<h3 style="margin:14px 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase">Уроки из журнала</h3><ul style="padding-left:18px;font-size:13px">${d.lessons.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}
+      <h3 style="margin:14px 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase">Последние решения</h3>
+      <div class="tbl"><table><tr><th>Время</th><th>Решение</th><th class="r">Доля</th><th class="r">Цена</th><th class="r">Через 4ч</th><th>Обоснование</th></tr>
+      ${d.decisions.map((x) => `<tr><td class="num">${time(x.ts)}</td><td>${x.action}${x.executed ? "" : ` <span class="tag">${esc(x.blocked_by || "не исполнено")}</span>`}</td><td class="r num">${fmt(x.target_exposure * 100, 0)}%</td><td class="r num">${fmt(x.price, 0)}</td><td class="r num ${cls(x.outcome_pct)}">${x.outcome_pct == null ? "—" : sign(x.outcome_pct) + "%"}</td><td class="note">${esc(x.reason)}</td></tr>`).join("")}</table></div>
+      ${a.status !== "fired" && a.status !== "dropped" ? `<p><button class="btn danger" id="modal-fire">${a.status === "intern" ? "Отчислить стажёра" : "Уволить агента"}</button></p>` : ""}`;
     $("#modal").classList.add("open");
     $("#modal-close").onclick = () => $("#modal").classList.remove("open");
     const f = $("#modal-fire");
-    if (f) f.onclick = async () => { if (confirm(`Уволить ${a.name}?`)) { await api(`/api/agents/${encodeURIComponent(name)}/fire`, { method: "POST" }); $("#modal").classList.remove("open"); refresh(); } };
+    if (f) f.onclick = async () => { if (confirm(`${a.status === "intern" ? "Отчислить" : "Уволить"} ${a.name}?`)) { await api(`/api/agents/${encodeURIComponent(name)}/fire`, { method: "POST" }); $("#modal").classList.remove("open"); refresh(true); } };
   }
 
-  async function refresh() {
+  // ---------- рендер вкладки ----------
+  function render() {
+    if (!state) return;
+    const view = $("#view");
+    const html = tab === "home" ? homeHTML(state) : tab === "team" ? teamHTML(state) : tab === "interns" ? internsHTML(state) : tab === "lab" ? labHTML(state) : reportsHTML(state);
+    view.innerHTML = `<div class="fade">${html}</div>`;
+    $$("[data-name]", view).forEach((el) => el.addEventListener("click", () => openAgent(el.dataset.name)));
+    $$(".approval button", view).forEach((b) => b.addEventListener("click", async () => { await api(`/api/approvals/${b.dataset.id}/${b.dataset.d}`, { method: "POST" }); refresh(true); }));
+    $$(".range button", view).forEach((b) => b.addEventListener("click", () => { range = b.dataset.r; $$(".range button", view).forEach((x) => x.classList.toggle("active", x === b)); drawChart(); }));
+    const rb = $("#btn-research", view);
+    if (rb) rb.onclick = async () => { rb.disabled = true; rb.textContent = "Считаю, около минуты…"; try { await api("/api/research", { method: "POST" }); } finally { rb.disabled = false; rb.textContent = "Запустить исследование"; refresh(true); } };
+    if (tab === "home") { startOffice($("#office", view), state); drawChart(); } else if (office) { cancelAnimationFrame(office.raf); office = null; }
+  }
+
+  async function refresh(force) {
     try {
-      state = await api("/api/state");
-      renderSummary(state); renderAgents(state); renderApprovals(state); renderInterns(state); renderBench(state); renderEvents(state);
-      drawChart();
+      const [st, sm, fam] = await Promise.all([api("/api/state"), (tab === "reports" || !summary || force) ? api("/api/summary") : summary, families || api("/api/families")]);
+      state = st; summary = sm; families = fam; equityData = null;
+      renderTop(state); render();
     } catch (e) {
-      $("#meta").textContent = "нет связи с сервером: " + e.message;
-      $("#dot").className = "dot err";
+      $("#meta").textContent = "нет связи с сервером: " + e.message; $("#dot").className = "dot err";
     }
   }
 
-  $("#btn-tick").onclick = async () => { $("#btn-tick").disabled = true; try { await api("/api/tick", { method: "POST" }); } finally { $("#btn-tick").disabled = false; refresh(); } };
-  $("#btn-research").onclick = async () => { $("#btn-research").disabled = true; $("#btn-research").textContent = "Считаю…"; try { await api("/api/research", { method: "POST" }); } finally { $("#btn-research").disabled = false; $("#btn-research").textContent = "Исследование"; refresh(); } };
+  $$("#tabs button").forEach((b) => b.addEventListener("click", () => { tab = b.dataset.tab; history.replaceState(null, "", "#" + tab); $$("#tabs button").forEach((x) => x.classList.toggle("active", x === b)); window.scrollTo(0, 0); render(); if (tab === "reports") refresh(true); }));
+  $$("#tabs button").forEach((x) => x.classList.toggle("active", x.dataset.tab === tab));
+  $("#btn-tick").onclick = async () => { const b = $("#btn-tick"); b.disabled = true; try { await api("/api/tick", { method: "POST" }); } finally { b.disabled = false; refresh(true); } };
   $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") $("#modal").classList.remove("open"); });
-
+  window.addEventListener("resize", () => { if (office) office.layout(); if (tab === "home") drawChart(); });
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
   refresh();
-  setInterval(refresh, 60000);
+  setInterval(() => refresh(false), 60000);
 })();

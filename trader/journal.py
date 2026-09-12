@@ -153,6 +153,26 @@ class Journal:
         rows = self._rows("SELECT ts, equity, price FROM equity WHERE agent=? ORDER BY ts DESC LIMIT ?", (agent, limit))
         return list(reversed(rows))
 
+    def daily_department(self, names: set[str]) -> list[dict]:
+        """Капитал команды по дням: сумма последних за день значений каждого агента."""
+        if not names:
+            return []
+        marks = ",".join("?" * len(names))
+        rows = self._rows(
+            f"SELECT date(ts,'unixepoch') AS day, agent, equity, ts FROM equity WHERE agent IN ({marks}) ORDER BY ts",
+            tuple(names))
+        per_day: dict[str, dict[str, float]] = {}
+        for r in rows:
+            per_day.setdefault(r["day"], {})[r["agent"]] = r["equity"]
+        out = []
+        prev = None
+        for day in sorted(per_day):
+            total = sum(per_day[day].values())
+            out.append({"day": day, "equity": round(total, 2), "agents": len(per_day[day]),
+                        "change": None if prev is None else round(total - prev, 2)})
+            prev = total
+        return out
+
     def equity_all(self, limit_per_agent: int = 500) -> dict[str, list[dict]]:
         out: dict[str, list[dict]] = {}
         for r in self._rows("SELECT DISTINCT agent FROM equity"):

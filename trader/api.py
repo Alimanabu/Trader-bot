@@ -79,6 +79,20 @@ def create_app(engine: Engine | None = None, start_scheduler: bool = True) -> Fa
         team = {r["name"] for r in engine.j.all_agents() if r["status"] not in ("intern", "dropped")}
         return {k: v for k, v in engine.j.equity_all(500).items() if k in team}
 
+    @app.get("/api/summary")
+    def summary():
+        team = {r["name"] for r in engine.j.all_agents() if r["status"] not in ("intern", "dropped")}
+        reports = [e for e in engine.j.recent_events(400) if e["kind"] == "report"][:30]
+        return {"daily": engine.j.daily_department(team), "reports": reports,
+                "all_agents": engine.j.all_agents()}
+
+    @app.get("/api/families")
+    def families():
+        from .agents.registry import STRATEGY_FAMILIES, family_label
+        return [{"family": f, "label": family_label(f), "description": cls.description,
+                 "llm": cls.family.startswith("llm_"), "params": cls.default_params()}
+                for f, cls in STRATEGY_FAMILIES.items()]
+
     @app.get("/api/candles")
     def candles(limit: int = 200):
         return [c.__dict__ for c in engine.last_candles[-limit:]]

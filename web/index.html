@@ -7,39 +7,26 @@
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/static/icon.svg">
 <link rel="apple-touch-icon" href="/static/icon.svg">
-<meta name="theme-color" content="#0f1115">
+<meta name="theme-color" content="#0b0d12">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<h1><span class="dot" id="dot"></span>Отдел BTC-агентов <span class="badge" id="mode">демо</span></h1>
-<div class="toolbar">
-  <span class="muted" id="meta">загрузка…</span>
-  <button id="btn-tick" title="Проверить, не закрылась ли новая свеча">Обновить</button>
-  <button id="btn-research" title="Запустить отдел исследований">Исследование</button>
-</div>
+<header class="top">
+  <div class="status"><span class="dot" id="dot"></span><span id="meta">загрузка…</span></div>
+  <button class="icon-btn" id="btn-tick" title="Проверить новую свечу">⟳</button>
+</header>
 
-<div class="card summary" id="summary"></div>
+<main id="view"></main>
 
-<h2>Капитал отдела</h2>
-<div class="card"><canvas id="chart"></canvas><div class="note" id="chart-note"></div></div>
-
-<div id="approvals-block" hidden>
-  <h2>Требуют вашего решения</h2>
-  <div id="approvals"></div>
-</div>
-
-<h2>Агенты</h2>
-<div class="grid" id="agents"></div>
-
-<h2>Стажёры <span class="muted" id="interns-count"></span></h2>
-<div class="card"><div class="note" style="margin-bottom:8px">Торгуют в тени на своих демосчетах, в капитал отдела не входят. Лучшие по итогам 14 дней предлагаются на замену худшим в команде.</div><div id="interns"></div></div>
-
-<h2>Кандидаты отдела исследований</h2>
-<div class="card" id="bench"></div>
-
-<h2>События</h2>
-<div class="card"><ul class="events" id="events"></ul></div>
+<nav class="tabs" id="tabs">
+  <button data-tab="home" class="active"><span class="ico">◉</span>Главная</button>
+  <button data-tab="team"><span class="ico">⚇</span>Команда</button>
+  <button data-tab="interns"><span class="ico">⚆</span>Стажёры</button>
+  <button data-tab="lab"><span class="ico">⚗</span>Наука</button>
+  <button data-tab="reports"><span class="ico">≣</span>Отчёты</button>
+</nav>
 
 <div class="modal" id="modal"><div class="box" id="modal-box"></div></div>
 <script src="/static/app.js"></script>
