@@ -147,3 +147,6 @@ details.acc[open] .acc-arrow { transform: rotate(90deg); }
 .feed .muted { grid-column: 2; font-size: 12px; }
 .tag.buy { color: var(--up); } .tag.sell { color: var(--down); }
 @media (max-width: 420px) { .acc-head, details.acc summary { grid-template-columns: 1fr 38px 74px 82px 12px; gap: 4px; } .acc-name b { font-size: 13px; } .acc-pnl { font-size: 12px; } }
+
+.state { font-size: 11px; color: var(--muted); }
+.state.inpos { color: var(--btc); } .state.wait { color: var(--dim); } .state.paused { color: var(--warn); } .state.fired, .state.dropped { color: var(--down); }

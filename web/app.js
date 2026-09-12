@@ -116,7 +116,7 @@
     const nextIn = a.next_decision_ts ? Math.max(0, Math.round((a.next_decision_ts - Date.now() / 1000) / 60)) : null;
     return `<details class="acc ${a.status}" data-name="${nameShort}">
       <summary>
-        <div class="acc-name"><b>${nameShort}</b><span class="badge ${a.status}">${STATUS[a.status] || a.status}</span></div>
+        <div class="acc-name"><b>${nameShort}</b><span class="state ${a.status !== "active" && a.status !== "intern" ? a.status : a.exposure > 0 ? "inpos" : "wait"}">${a.status === "paused" ? "пауза" : a.status === "fired" ? "уволен" : a.status === "dropped" ? "отчислен" : a.exposure > 0 ? `в BTC ${fmt(a.exposure * 100, 0)}%` : a.decided_at ? "ждёт сигнала" : "ещё не решал"}</span></div>
         <div class="acc-time num" title="Минута часа, в которую агент принимает решение">${mm(a.slot_minute)}</div>
         <div class="acc-pnl num ${cls(a.pnl_24h)}">${sign(a.pnl_24h)} $<small>24 ч</small></div>
         <div class="acc-pnl num ${cls(a.pnl_total)}">${sign(a.pnl_total)} $<small>всего</small></div>
