@@ -189,6 +189,13 @@ class Journal:
                         qty_held, avg = 0.0, 0.0
         return fixed
 
+    def fees_since(self, ts: int, names: set[str]) -> float:
+        if not names:
+            return 0.0
+        marks = ",".join("?" * len(names))
+        rows = self._rows(f"SELECT COALESCE(SUM(fee),0) AS f FROM trades WHERE ts>=? AND agent IN ({marks})", (ts, *names))
+        return float(rows[0]["f"] or 0.0)
+
     def trades_since(self, ts: int, limit: int = 200) -> list[dict]:
         return self._rows("SELECT * FROM trades WHERE ts>=? ORDER BY id DESC LIMIT ?", (ts, limit))
 

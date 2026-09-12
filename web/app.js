@@ -16,7 +16,7 @@
     const was = x.exposure_before == null ? null : Math.round(x.exposure_before * 100);
     return `<span class="dim">без сделки${was != null ? `, уже ${was}% в BTC` : ""}</span>`;
   }
-  const KIND = { fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", stop: "стоп-лосс", demote: "в стажёры", weekly: "ротация", live_ready: "к реальным торгам", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
+  const KIND = { fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", stop: "стоп-лосс", demote: "в стажёры", weekly: "ротация", live_ready: "к реальным торгам", head: "руководитель", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
 
   const TABS = ["home", "team", "interns", "lab", "reports"];
   let state = null, tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "home", equityData = null, summary = null, families = null, range = "all";
@@ -244,8 +244,20 @@
     const allRows = [...s.agents].sort((a, b) => b.pnl_total - a.pnl_total).map((a) => `<tr class="link" data-name="${esc(a.name)}"><td>${esc(a.name)} <span class="badge ${a.status}">${STATUS[a.status]}</span></td><td class="r num ${cls(a.pnl_total)}">${sign(a.pnl_total)} $</td><td class="r num ${cls(a.pnl_day)}">${sign(a.pnl_day)} $</td><td class="r num">${a.trades}</td><td class="r num">${fmt(a.win_rate * 100, 0)}%</td><td class="r num">${fmt(a.drawdown * 100, 1)}%</td></tr>`).join("");
     const daily = [...sm.daily].reverse().map((d) => `<tr><td>${d.day.slice(5).split("-").reverse().join(".")}</td><td class="r num">${fmt(d.equity)} $</td><td class="r num ${cls(d.change)}">${d.change == null ? "—" : sign(d.change) + " $"}</td></tr>`).join("");
     const reports = sm.reports.map((e) => { let data = {}; try { data = JSON.parse(e.data || "{}"); } catch (_) {} return `<div class="report"><div class="t">${time(e.ts)}</div><div>${esc(e.message)}</div>${(data.recommendations || []).length ? `<ul>${data.recommendations.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}</div>`; }).join("");
+    const h = s.head || {};
+    const REG = { up: "рост", flat: "боковик", down: "падение", off: "выключено" };
+    const weeks = (h.weeks || []).slice(-6).reverse();
     return `<h2 class="sec">Отчёты</h2>
       ${approvalsHTML(s)}
+      <div class="card"><h3>Руководитель отдела</h3><div class="stat">
+        <div><div class="k">Подход</div><div class="v" style="font-size:15px">${h.mode === "defensive" ? "защитный" : "обычный"}</div></div>
+        <div><div class="k">Режим рынка</div><div class="v" style="font-size:15px">${REG[h.regime] || "—"}</div></div>
+        <div><div class="k">Потолок доли</div><div class="v num">${fmt((h.cap ?? 1) * 100, 0)}%</div></div>
+        <div><div class="k">Порог сделки</div><div class="v num">${fmt((h.min_rebalance ?? 0.05) * 100, 0)}%</div></div>
+        <div><div class="k">Недель хуже долларов подряд</div><div class="v num ${h.fail_weeks ? "down" : ""}">${h.fail_weeks ?? 0}</div></div>
+      </div>
+      <div class="note" style="margin-top:8px">Руководитель отвечает за результат: каждый день оценивает рынок и выставляет потолок доли, каждую неделю сравнивает отдел с «просто держать доллары» и «просто держать биткоин». Две недели подряд хуже долларов, и он переходит на защитный подход и переобучает всех.</div>
+      ${weeks.length ? `<div class="tbl" style="margin-top:8px"><table><tr><th>Неделя</th><th class="r">Отдел</th><th class="r">Биткоин</th><th class="r">Комиссии</th></tr>${weeks.map((w) => `<tr><td>${date(w.ts)}</td><td class="r num ${cls(w.dept)}">${sign(w.dept, 2)}%</td><td class="r num ${cls(w.btc)}">${sign(w.btc, 2)}%</td><td class="r num">${fmt(w.fees)} $</td></tr>`).join("")}</table></div>` : '<div class="note" style="margin-top:6px">Первое недельное сравнение появится в понедельник.</div>'}</div>
       <div class="card"><h3>Нейросеть</h3><div class="stat">
         <div><div class="k">Модель</div><div class="v" style="font-size:14px">${s.llm ? esc(s.llm_model) : "нет ключа"}</div></div>
         <div><div class="k">Расход сегодня</div><div class="v num">${fmt(s.llm_spend?.usd ?? 0, 2)} $ <span class="muted" style="font-size:12px">из ${fmt(s.llm_spend?.budget ?? 0, 2)} $</span></div></div>

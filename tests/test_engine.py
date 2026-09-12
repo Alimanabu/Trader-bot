@@ -226,3 +226,33 @@ def test_backfill_sell_pnl_for_old_trades():
     assert j.backfill_trade_pnl() == 1
     t = j.recent_trades(5)[0]
     assert abs(t["pnl"] - (110.0 - 100.1 - 0.11)) < 1e-9 and abs(t["cost"] - 100.1) < 1e-9
+
+
+def test_head_regime_caps_and_mode_switch(settings):
+    settings.intern_count = 0
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    pol = eng.head.policy()
+    assert pol["regime"] in {"up", "flat", "down"} and 0 < pol["cap"] <= 1.0
+    assert eng.risk.policy_cap == pol["cap"]
+    # режим определяется по свечам
+    from trader.models import Candle
+    up = [Candle(i * 3600, 100 + i, 101 + i, 99 + i, 100 + i, 1.0) for i in range(260)]
+    down = [Candle(i * 3600, 400 - i, 401 - i, 399 - i, 400 - i, 1.0) for i in range(260)]
+    assert eng.head.assess_regime(up) == "up" and eng.head.assess_regime(down) == "down"
+    # две недели хуже долларов → защитный подход
+    for a in eng.agents:
+        if a.status == "active":
+            a.account.cash -= 30
+    eng.tick(now=T + 7 * 86400)
+    for a in eng.agents:
+        if a.status == "active":
+            a.account.cash -= 30
+    eng.tick(now=T + 14 * 86400)
+    pol = eng.head.policy()
+    assert pol["fail_weeks"] >= 2 and pol["mode"] == "defensive"
+    assert pol["cap"] <= 0.7
+    kinds = [e for e in eng.j.recent_events(200) if e["kind"] == "head"]
+    assert kinds and any("защитный" in e["message"] for e in kinds)

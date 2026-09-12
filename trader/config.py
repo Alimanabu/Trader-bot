@@ -55,6 +55,8 @@ class Settings:
     llm_max_interval_min: int = 360
     llm_news_min_interval_min: int = 240   # новостник с веб-поиском дороже, поэтому реже
     llm_daily_budget_usd: float = 2.0      # жёсткий потолок расходов на нейросеть в сутки
+    head_policy: bool = True               # руководитель управляет потолком доли по режиму рынка и отвечает за результат
+    head_fail_weeks: int = 2               # столько недель подряд хуже «просто держать доллары» → защитный подход
     weekly_demote_max: int = 3             # сколько худших членов команды за неделю можно перевести в стажёры
     live_ready_weeks: int = 3              # недель подряд в плюсе, чтобы стать кандидатом на реальный счёт
     research_lookback: int = 720
@@ -98,6 +100,8 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         llm_max_interval_min=int(env.get("LLM_MAX_INTERVAL_MIN", "360")),
         llm_news_min_interval_min=int(env.get("LLM_NEWS_MIN_INTERVAL_MIN", "240")),
         llm_daily_budget_usd=float(env.get("LLM_DAILY_BUDGET_USD", "2.0")),
+        head_policy=_bool(env.get("HEAD_POLICY"), True),
+        head_fail_weeks=int(env.get("HEAD_FAIL_WEEKS", "2")),
         weekly_demote_max=int(env.get("WEEKLY_DEMOTE_MAX", "3")),
         live_ready_weeks=int(env.get("LIVE_READY_WEEKS", "3")),
         research_lookback=int(env.get("RESEARCH_LOOKBACK", "720")),

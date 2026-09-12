@@ -188,3 +188,5 @@ details.acc[open] .acc-arrow { transform: rotate(90deg); }
 .pill.gold { background: rgba(247,147,26,.18); color: var(--btc); }
 .pill.green { background: rgba(52,210,123,.15); color: var(--up); }
 .kind.demote { color: var(--warn); } .kind.weekly, .kind.live_ready { color: var(--btc); }
+
+.kind.head { color: var(--teal, #7cd8ff); }

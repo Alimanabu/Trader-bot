@@ -230,7 +230,7 @@ class Engine:
             a.observe(price)
         if new_week:
             if self.j.kv_get("week_key"):        # не при самом первом запуске
-                summary["weekly"] = self.head.weekly_review(self.agents, price, now_i)
+                summary["weekly"] = self.head.weekly_review(self.agents, price, now_i, candles)
             self.j.kv_set("week_key", wk)
             for a in self.agents:
                 if a.status not in {"fired", "dropped"}:
@@ -253,6 +253,13 @@ class Engine:
                 self.j.event("halt", f"Отдел остановлен: {why}", None, ts=now_i)
             summary["halt"] = why
 
+        if self.j.kv_get("head_day") != dk:
+            self.j.kv_set("head_day", dk)
+            self.head.daily_policy(candles, now_i)
+        pol = self.head.policy()
+        self.risk.policy_cap = float(pol.get("cap", 1.0))
+        for a in alive:
+            a.account.min_rebalance_frac = float(pol.get("min_rebalance", 0.05))
         atr_pct = self._atr_pct(candles)
         summary["stops"] = self._check_stops(alive, price, now_i)
         view = None
@@ -436,6 +443,7 @@ class Engine:
             "last_poll_ts": self.last_poll_ts,
             "max_exposure": self.s.agent_max_exposure,
             "risk_per_trade": self.s.risk_per_trade,
+            "head": self.head.policy(),
         }
 
     def _trades_24h(self, now_i: int) -> list[dict]:

@@ -19,6 +19,7 @@ from .journal import Journal
 from .llm import ClaudeClient, LLMUnavailable
 from .models import Candle
 from .research import StrategyLab, combo_key, result_to_dict
+from .data import indicators as ind
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +54,106 @@ class DepartmentHead:
         self.client = client
         self.team_size = team_size or settings.team_size
         self.lab = StrategyLab(fee_rate=settings.fee_rate)
+
+    # --- политика руководителя: режим рынка, потолок доли, ответственность за результат ---
+    CAPS = {"balanced": {"up": 1.0, "flat": 0.7, "down": 0.4}, "defensive": {"up": 0.7, "flat": 0.4, "down": 0.2}}
+
+    def policy(self) -> dict:
+        return self.j.kv_get("head_policy", None) or {
+            "mode": "balanced", "regime": "flat", "cap": 1.0, "min_rebalance": 0.05,
+            "fail_weeks": 0, "good_weeks": 0, "weeks": [], "changed_ts": 0,
+        }
+
+    def _save_policy(self, pol: dict) -> None:
+        self.j.kv_set("head_policy", pol)
+
+    def assess_regime(self, candles: list[Candle]) -> str:
+        closes = [c.close for c in candles]
+        if len(closes) < 210:
+            return "flat"
+        s50, s200 = ind.sma(closes, 50)[-1], ind.sma(closes, 200)[-1]
+        s200_prev = ind.sma(closes, 200)[-25]
+        if s50 is None or s200 is None or s200_prev is None:
+            return "flat"
+        price = closes[-1]
+        if price > s50 > s200 and s200 >= s200_prev:
+            return "up"
+        if price < s50 < s200 and s200 <= s200_prev:
+            return "down"
+        return "flat"
+
+    def daily_policy(self, candles: list[Candle], ts: int) -> dict:
+        """Раз в день: оценить рынок и выставить потолок доли для всего отдела."""
+        pol = self.policy()
+        if not self.s.head_policy:
+            pol.update({"cap": 1.0, "regime": "off"})
+            self._save_policy(pol)
+            return pol
+        regime = self.assess_regime(candles)
+        cap = self.CAPS[pol["mode"]][regime]
+        if regime != pol.get("regime") or abs(cap - pol.get("cap", 1.0)) > 1e-9:
+            names = {"up": "рост", "flat": "боковик", "down": "падение"}
+            self.j.event("head", f"Руководитель: рынок — {names[regime]}, потолок доли для отдела {cap:.0%} "
+                                 f"(подход: {'обычный' if pol['mode'] == 'balanced' else 'защитный'})", None,
+                         {"regime": regime, "cap": cap, "mode": pol["mode"]}, ts=ts)
+        pol["regime"], pol["cap"], pol["changed_ts"] = regime, cap, ts
+        self._save_policy(pol)
+        return pol
+
+    def weekly_policy(self, agents: list[Agent], candles: list[Candle], price: float, ts: int) -> dict:
+        """Раз в неделю: KPI руководителя. Сравнение с «держать доллары» и «держать биткоин», смена подхода."""
+        pol = self.policy()
+        team = [a for a in agents if is_team(a) and a.week_start_equity > 0]
+        if not team:
+            return pol
+        start = sum(a.week_start_equity for a in team)
+        dept_pct = (sum(a.equity(price) for a in team) - start) / start * 100 if start else 0.0
+        week_ago = [c for c in candles if c.ts <= ts - 7 * 86400]
+        btc_pct = (price / week_ago[-1].close - 1) * 100 if week_ago else 0.0
+        fees = self.j.fees_since(ts - 7 * 86400, {a.name for a in team})
+        loss = max(0.0, -(sum(a.equity(price) for a in team) - start))
+        fee_share = fees / loss if loss > 0 else 0.0
+        beat_cash = dept_pct > 0
+        pol["weeks"] = (pol.get("weeks") or [])[-11:] + [{"ts": ts, "dept": round(dept_pct, 2), "btc": round(btc_pct, 2), "fees": round(fees, 2)}]
+        pol["fail_weeks"] = 0 if beat_cash else pol.get("fail_weeks", 0) + 1
+        pol["good_weeks"] = pol.get("good_weeks", 0) + 1 if beat_cash else 0
+        notes = [f"отдел {dept_pct:+.2f}% за неделю, биткоин {btc_pct:+.2f}%, комиссии {fees:.2f} $"]
+        # торговать реже, если потери в основном из комиссий
+        new_min = 0.10 if fee_share > 0.5 else 0.05
+        if abs(new_min - pol.get("min_rebalance", 0.05)) > 1e-9:
+            notes.append("комиссии съедают больше половины потерь: торгуем реже" if new_min > 0.05 else "порог сделок возвращён к обычному")
+        pol["min_rebalance"] = new_min
+        # смена подхода
+        if pol["fail_weeks"] >= self.s.head_fail_weeks and pol["mode"] == "balanced":
+            pol["mode"] = "defensive"
+            notes.append(f"{pol['fail_weeks']} недели подряд хуже долларов: перехожу на защитный подход и переобучаю всех")
+            self.retrain(agents, candles, ts, all_agents=True)
+        elif pol["good_weeks"] >= 2 and pol["mode"] == "defensive" and pol.get("regime") == "up":
+            pol["mode"] = "balanced"
+            notes.append("две недели в плюсе и рынок растёт: возвращаю обычный подход")
+        pol["cap"] = self.CAPS[pol["mode"]].get(pol.get("regime", "flat"), 1.0) if self.s.head_policy else 1.0
+        self._save_policy(pol)
+        self.j.event("head", "Отчёт руководителя за неделю: " + "; ".join(notes), None, pol, ts=ts)
+        return pol
+
+    def retrain(self, agents: list[Agent], candles: list[Candle], ts: int, all_agents: bool = False, only: list[Agent] | None = None) -> int:
+        """Переобучение: заново подобрать параметры под последние 30 дней."""
+        hist = candles[-self.s.research_lookback:]
+        targets = only if only is not None else [a for a in agents if a.status not in {"fired", "dropped"} and (all_agents or is_team(a))]
+        n = 0
+        for a in targets:
+            if a.strategy.uses_llm():
+                continue
+            try:
+                best = self.lab.best_params(a.strategy.family, hist)
+            except Exception:  # noqa: BLE001
+                continue
+            if best.params != a.strategy.params:
+                old = dict(a.strategy.params)
+                a.strategy.params.update(best.params)
+                self.j.event("retune", f"{a.name}: переобучен, параметры {old} → {best.params}", a.name, ts=ts)
+                n += 1
+        return n
 
     # --- увольнение и отчисление ---
     def fire(self, agent: Agent, price: float, ts: int, reason: str) -> None:
@@ -188,7 +289,7 @@ class DepartmentHead:
         d = datetime.fromtimestamp(ts, tz=timezone.utc).isocalendar()
         return f"{d[0]}-W{d[1]:02d}"
 
-    def weekly_review(self, agents: list[Agent], price: float, ts: int) -> dict:
+    def weekly_review(self, agents: list[Agent], price: float, ts: int, candles: list[Candle] | None = None) -> dict:
         """Понедельник, начало недели по UTC.
 
         1. Члены команды с минусом за неделю (не больше weekly_demote_max худших) → стажёры на испытательный срок.
@@ -201,6 +302,8 @@ class DepartmentHead:
         interns = [a for a in agents if is_intern(a)]
         if not team:
             return res
+        if candles:
+            res["head"] = self.weekly_policy(agents, candles, price, ts)
         # серии
         for a in team:
             if a.week_start_equity <= 0:
@@ -224,6 +327,8 @@ class DepartmentHead:
             pct = a.pnl_week_pct(price)
             a.account.flatten(price, ts, "перевод в стажёры")
             a.reset_account(self.s.agent_start_balance, ts)
+            if candles:
+                self.retrain(agents, candles, ts, only=[a])
             a.status = "intern"
             a.streak_weeks = 0
             a.trial_weeks = 1

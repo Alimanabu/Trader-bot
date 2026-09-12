@@ -28,6 +28,7 @@ class RiskManager:
     def __init__(self, settings: Settings):
         self.s = settings
         self.dept_halted_day: str = ""
+        self.policy_cap: float = 1.0      # потолок доли, выставленный руководителем по режиму рынка
 
     def stop_distance(self, atr_pct: float) -> float:
         """Расстояние стопа от входа в долях цены. Не меньше 0.5%, не больше 10%."""
@@ -38,7 +39,8 @@ class RiskManager:
         и не больше потолка agent_max_exposure."""
         dist = self.stop_distance(atr_pct)
         by_risk = self.s.risk_per_trade / dist if dist > 0 else 1.0
-        return max(0.0, min(self.s.agent_max_exposure, desired * min(1.0, by_risk)))
+        cap = min(self.s.agent_max_exposure, self.policy_cap)
+        return max(0.0, min(cap, desired * min(1.0, by_risk)))
 
     def check_department(self, agents: list[Agent], price: float, day_key: str) -> tuple[bool, str]:
         active = [a for a in agents if a.status in {"active", "paused"}]
@@ -68,5 +70,7 @@ class RiskManager:
         if agent.status == "paused":
             return RiskVerdict(False, 0.0, "агент на паузе до конца дня")
         if abs(target - signal.target_exposure) > 1e-9:
+            if self.policy_cap < min(1.0, self.s.agent_max_exposure) and abs(target - self.policy_cap * min(1.0, signal.target_exposure)) < 1e-9:
+                return RiskVerdict(True, target, f"потолок руководителя {self.policy_cap:.0%} по режиму рынка")
             return RiskVerdict(True, target, f"размер по риску: {target:.0%} (стоп {self.stop_distance(atr_pct)*100:.1f}%)")
         return RiskVerdict(True, target, "ok")
