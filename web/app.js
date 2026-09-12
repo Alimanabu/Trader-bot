@@ -13,7 +13,25 @@
 
   const TABS = ["home", "team", "interns", "lab", "reports"];
   let state = null, tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "home", equityData = null, summary = null, families = null, range = "all";
-  let office = null;
+  let office = null, chartPoints = [];
+  const TZ = "Asia/Almaty";   // Астана, UTC+5
+  const astana = (d = new Date()) => d.toLocaleString("ru-RU", { timeZone: TZ, day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }).replace(",", "");
+  const astanaTime = (d) => d.toLocaleTimeString("ru-RU", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
+  window.astanaClock = () => "Астана " + astana();
+  function nextCandleInfo() {
+    const step = 3600, now = Date.now() / 1000;
+    const next = (Math.floor(now / step) + 1) * step + 15;    // решение через 15 с после закрытия свечи
+    const left = Math.max(0, next - now);
+    const m = Math.floor(left / 60), sec = Math.floor(left % 60);
+    const when = astanaTime(new Date(next * 1000));
+    return left < 60 ? `решение вот-вот, в ${when}` : `следующее решение через ${m} мин ${String(sec).padStart(2, "0")} с, в ${when}`;
+  }
+  function tickClock() {
+    const el = $("#clock"); if (!el) return;
+    const halted = state && state.department.halted;
+    el.innerHTML = `<span class="num">${astana()}</span> по Астане · ${halted ? "отдел остановлен до завтра" : nextCandleInfo()}`;
+  }
+  setInterval(tickClock, 1000);
 
   async function api(path, opts) {
     const r = await fetch(path, opts);
@@ -38,6 +56,7 @@
       <div class="label">Капитал отдела · демосчёт</div>
       <div class="big num">${fmt(d.equity)} <small>$</small></div>
       <div class="sub num">BTC ${fmt(s.price, 0)} $ · ${team.length} из ${s.team_size} агентов · ${s.interns.length} стажёров</div>
+      <div class="sub" id="clock"></div>
       <div class="delta num ${cls(day)}">${sign(day)} $ <span>за сегодня</span></div>
       <div class="delta num ${cls(d.pnl)}">${sign(d.pnl)} $ (${sign(pct, 2)}%) <span>за всё время</span></div>
     </section>`;
@@ -71,10 +90,10 @@
 
   function homeHTML(s) {
     return heroHTML(s) + `
-      <div class="card office fade"><h3>Как работает отдел прямо сейчас</h3>
-        <canvas id="office"></canvas>
-        <div class="legend"><span><i style="background:var(--usdt)"></i>котировки с биржи</span><span><i style="background:var(--up)"></i>агент в плюсе</span><span><i style="background:var(--down)"></i>агент в минусе</span><span><i style="background:var(--btc)"></i>сделка через риск-менеджера</span><span><i style="background:var(--violet)"></i>стажёры и исследования</span></div>
-        <div class="note" style="margin-top:6px">Нажмите на агента, чтобы открыть его карточку.</div></div>
+      <div class="card office fade"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><h3 style="margin:0">Торговый зал</h3><button class="btn" id="btn-fit" style="padding:4px 10px;font-size:12px">По размеру</button></div>
+        <canvas id="office" style="margin-top:8px"></canvas>
+        <div class="legend"><span><i style="background:var(--btc)"></i>монитор горит оранжевым: агент в BTC</span><span><i style="background:var(--up)"></i>бирка в плюсе</span><span><i style="background:var(--down)"></i>бирка в минусе</span><span><i style="background:var(--violet)"></i>кабинеты отделов слева, стажёры в дальних рядах</span></div>
+        <div class="note" style="margin-top:6px">Тяните, чтобы двигать зал, щипок или колесо для зума, нажатие на сотрудника открывает его карточку.</div></div>
       <div class="card chart fade"><h3>Капитал отдела</h3>
         <div class="range"><button data-r="day" class="${range === "day" ? "active" : ""}">День</button><button data-r="week" class="${range === "week" ? "active" : ""}">Неделя</button><button data-r="all" class="${range === "all" ? "active" : ""}">Всё время</button></div>
         <canvas id="chart"></canvas><div class="tip" id="tip"></div><div class="note" id="chart-note"></div></div>
@@ -174,104 +193,12 @@
       <div class="actions"><button class="btn primary" data-id="${p.id}" data-d="approve">Одобрить</button><button class="btn" data-id="${p.id}" data-d="reject">Отклонить</button></div></div>`).join("");
   }
 
-  // ---------- анимация офиса ----------
-  function startOffice(canvas, s) {
-    if (office) { cancelAnimationFrame(office.raf); office = null; }
-    const ctx = canvas.getContext("2d");
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    let W = 0, H = 0;
-    const team = s.agents.filter((a) => a.status !== "fired");
-    const interns = s.interns.length;
-    const nodes = {}, agents = [], particles = [];
-    const col = (a) => a.status === "paused" ? "#ffb547" : a.pnl_total > 0.5 ? "#34d27b" : a.pnl_total < -0.5 ? "#ff6b6b" : "#8a93a8";
-    const now = s.now;
-
-    function layout() {
-      W = canvas.clientWidth; H = canvas.clientHeight;
-      canvas.width = W * dpr; canvas.height = H * dpr;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const mobile = W < 700;
-      const R = mobile ? 15 : 20;
-      nodes.market = { x: mobile ? 32 : 60, y: H * 0.5, r: R, label: "Биржа", color: "#4f8cff" };
-      nodes.risk = { x: W - (mobile ? 32 : 130), y: H * 0.5, r: R, label: "Риск-менеджер", color: "#ffb547" };
-      nodes.book = mobile ? { x: W - 32, y: 26, r: 12, label: "Счёт", color: "#eef1f7" } : { x: W - 55, y: H * 0.5, r: 17, label: "Счёт", color: "#eef1f7" };
-      nodes.head = { x: W / 2, y: 24, r: 13, label: "Руководитель", color: "#eef1f7" };
-      nodes.lab = { x: W / 2, y: H - 36, r: 13, label: `Исследования · ${interns} стажёров`, color: "#9085e9" };
-      const cx = W / 2, cy = H * 0.5, rx = mobile ? W * 0.31 : Math.min(W * 0.27, 200), ry = mobile ? H * 0.28 : Math.min(H * 0.25, 95);
-      agents.length = 0;
-      team.forEach((a, i) => {
-        const t = (i / team.length) * Math.PI * 2 - Math.PI / 2;
-        agents.push({ a, x: cx + rx * Math.cos(t), y: cy + ry * Math.sin(t), r: 8 + 5 * a.exposure, phase: Math.random() * 6 });
-      });
-    }
-
-    function spawn(t) {
-      if (!agents.length) return;
-      // котировки: биржа → случайный агент
-      if (Math.random() < 0.12) { const g = agents[Math.floor(Math.random() * agents.length)]; particles.push({ from: nodes.market, to: g, t: 0, v: 0.008 + Math.random() * 0.006, c: "#4f8cff", r: 2.2 }); }
-      // решения: агент → риск-менеджер
-      if (Math.random() < 0.07) { const g = agents[Math.floor(Math.random() * agents.length)]; particles.push({ from: g, to: nodes.risk, t: 0, v: 0.009, c: col(g.a), r: 2 }); }
-      // сделки: риск → счёт, только у тех, кто торговал за последние 2 часа
-      const traded = agents.filter((g) => g.a.last_trade_ts && now - g.a.last_trade_ts < 7200);
-      if (traded.length && Math.random() < 0.05) particles.push({ from: nodes.risk, to: nodes.book, t: 0, v: 0.012, c: "#f7931a", r: 2.6 });
-      // стажёры вокруг лаборатории, руководитель смотрит на агентов
-      if (Math.random() < 0.03) { const g = agents[Math.floor(Math.random() * agents.length)]; particles.push({ from: nodes.head, to: g, t: 0, v: 0.01, c: "rgba(238,241,247,.6)", r: 1.6 }); }
-    }
-
-    function node(n, t) {
-      ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 4 + Math.sin(t / 700) * 1.5, 0, Math.PI * 2);
-      ctx.fillStyle = n.color.startsWith("#") ? n.color + "22" : "rgba(255,255,255,.08)"; ctx.fill();
-      ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2); ctx.fillStyle = "#1c2130"; ctx.fill();
-      ctx.lineWidth = 2; ctx.strokeStyle = n.color; ctx.stroke();
-      ctx.fillStyle = "#8a93a8"; ctx.font = "11px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.textAlign = "center";
-      ctx.fillText(n.label, n.x, n.y + n.r + 14);
-    }
-
-    function draw(t) {
-      ctx.clearRect(0, 0, W, H);
-      // связи
-      ctx.lineWidth = 1; ctx.strokeStyle = "rgba(138,147,168,.18)";
-      agents.forEach((g) => { [nodes.market, nodes.risk].forEach((n) => { ctx.beginPath(); ctx.moveTo(n.x, n.y); ctx.lineTo(g.x, g.y); ctx.stroke(); }); });
-      ctx.beginPath(); ctx.moveTo(nodes.risk.x, nodes.risk.y); ctx.lineTo(nodes.book.x, nodes.book.y); ctx.strokeStyle = "rgba(247,147,26,.35)"; ctx.stroke();
-      // орбита стажёров
-      const orb = Math.min(28, interns ? 26 : 0);
-      for (let i = 0; i < Math.min(interns, 20); i++) {
-        const ang = t / 6000 * Math.PI * 2 + (i / Math.max(1, Math.min(interns, 20))) * Math.PI * 2;
-        const x = nodes.lab.x + Math.cos(ang) * (orb + (i % 2) * 8), y = nodes.lab.y + Math.sin(ang) * (orb * 0.45 + (i % 2) * 4);
-        ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI * 2); ctx.fillStyle = "#9085e9"; ctx.fill();
-      }
-      // частицы
-      for (let i = particles.length - 1; i >= 0; i--) {
-        const p = particles[i]; p.t += p.v; if (p.t >= 1) { particles.splice(i, 1); continue; }
-        const e = p.t < 0.5 ? 2 * p.t * p.t : -1 + (4 - 2 * p.t) * p.t;
-        const x = p.from.x + (p.to.x - p.from.x) * e, y = p.from.y + (p.to.y - p.from.y) * e;
-        ctx.beginPath(); ctx.arc(x, y, p.r, 0, Math.PI * 2); ctx.fillStyle = p.c; ctx.fill();
-      }
-      // узлы
-      [nodes.market, nodes.risk, nodes.book, nodes.head, nodes.lab].forEach((n) => node(n, t));
-      // агенты
-      ctx.font = "10px -apple-system, Segoe UI, Roboto, sans-serif";
-      agents.forEach((g) => {
-        const c = col(g.a), pulse = g.a.exposure > 0 ? 2 + Math.sin(t / 400 + g.phase) * 2 : 0;
-        if (pulse) { ctx.beginPath(); ctx.arc(g.x, g.y, g.r + pulse + 3, 0, Math.PI * 2); ctx.fillStyle = c + "22"; ctx.fill(); }
-        ctx.beginPath(); ctx.arc(g.x, g.y, g.r, 0, Math.PI * 2); ctx.fillStyle = "#141821"; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = c; ctx.stroke();
-        if (g.a.exposure > 0) { ctx.beginPath(); ctx.arc(g.x, g.y, g.r - 4, 0, Math.PI * 2); ctx.fillStyle = "#f7931a"; ctx.globalAlpha = 0.35 + 0.65 * g.a.exposure; ctx.fill(); ctx.globalAlpha = 1; }
-        ctx.fillStyle = "#c9d0dd"; ctx.textAlign = "center";
-        const short = g.a.name.replace(/\s*\(.*\)/, "").replace("Нейро-", "Н-").slice(0, W < 700 ? 11 : 16);
-        ctx.fillText(short, g.x, g.y + g.r + 11);
-      });
-      spawn(t);
-      office.raf = requestAnimationFrame(draw);
-    }
-
-    office = { raf: 0, agents, layout };
-    layout();
-    office.raf = requestAnimationFrame(draw);
-    canvas.onclick = (ev) => {
-      const b = canvas.getBoundingClientRect(); const x = ev.clientX - b.left, y = ev.clientY - b.top;
-      const hit = agents.find((g) => Math.hypot(g.x - x, g.y - y) <= g.r + 8);
-      if (hit) openAgent(hit.a.name);
-    };
+  async function startFloorView(view) {
+    if (office) { office.stop(); office = null; }
+    await drawChart();
+    const canvas = $("#office", view); if (!canvas) return;
+    office = window.startFloor(canvas, state, chartPoints, openAgent);
+    const fb = $("#btn-fit", view); if (fb) fb.onclick = () => office && office.fit();
   }
 
   // ---------- график капитала ----------
@@ -281,6 +208,7 @@
     const byTs = new Map();
     Object.values(equityData).forEach((series) => series.forEach((p) => byTs.set(p.ts, (byTs.get(p.ts) || 0) + p.equity)));
     let pts = [...byTs.entries()].sort((a, b) => a[0] - b[0]);
+    chartPoints = pts.slice(-168);
     const last = pts.length ? pts[pts.length - 1][0] : 0;
     if (range === "day") pts = pts.filter((p) => p[0] >= last - 86400);
     if (range === "week") pts = pts.filter((p) => p[0] >= last - 7 * 86400);
@@ -344,12 +272,13 @@
     const view = $("#view");
     const html = tab === "home" ? homeHTML(state) : tab === "team" ? teamHTML(state) : tab === "interns" ? internsHTML(state) : tab === "lab" ? labHTML(state) : reportsHTML(state);
     view.innerHTML = `<div class="fade">${html}</div>`;
+    tickClock();
     $$("[data-name]", view).forEach((el) => el.addEventListener("click", () => openAgent(el.dataset.name)));
     $$(".approval button", view).forEach((b) => b.addEventListener("click", async () => { await api(`/api/approvals/${b.dataset.id}/${b.dataset.d}`, { method: "POST" }); refresh(true); }));
     $$(".range button", view).forEach((b) => b.addEventListener("click", () => { range = b.dataset.r; $$(".range button", view).forEach((x) => x.classList.toggle("active", x === b)); drawChart(); }));
     const rb = $("#btn-research", view);
     if (rb) rb.onclick = async () => { rb.disabled = true; rb.textContent = "Считаю, около минуты…"; try { await api("/api/research", { method: "POST" }); } finally { rb.disabled = false; rb.textContent = "Запустить исследование"; refresh(true); } };
-    if (tab === "home") { startOffice($("#office", view), state); drawChart(); } else if (office) { cancelAnimationFrame(office.raf); office = null; }
+    if (tab === "home") { startFloorView(view); } else if (office) { office.stop(); office = null; }
   }
 
   async function refresh(force) {
