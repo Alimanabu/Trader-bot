@@ -14,6 +14,7 @@
   const TABS = ["home", "team", "interns", "lab", "reports"];
   let state = null, tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "home", equityData = null, summary = null, families = null, range = "all";
   let office = null, chartPoints = [];
+  const openRows = new Set();
   const TZ = "Asia/Almaty";   // Астана, UTC+5
   const astana = (d = new Date()) => d.toLocaleString("ru-RU", { timeZone: TZ, day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }).replace(",", "");
   const astanaTime = (d) => d.toLocaleTimeString("ru-RU", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
@@ -93,16 +94,51 @@
 
   function homeHTML(s) {
     return heroHTML(s) + `
-      <div class="card office fade"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><h3 style="margin:0">Торговый зал</h3><button class="btn" id="btn-fit" style="padding:4px 10px;font-size:12px">По размеру</button></div>
-        <canvas id="office" style="margin-top:8px"></canvas>
-        <div class="legend"><span><i style="background:var(--btc)"></i>монитор горит оранжевым: агент в BTC</span><span><i style="background:var(--up)"></i>бирка в плюсе</span><span><i style="background:var(--down)"></i>бирка в минусе</span><span><i style="background:var(--violet)"></i>кабинеты отделов слева, стажёры в дальних рядах</span></div>
-        <div class="note" style="margin-top:6px">Тяните, чтобы двигать зал, щипок или колесо для зума, нажатие на сотрудника открывает его карточку.</div></div>
+      <div class="card office fade"><h3>Офис отдела</h3>
+        <canvas id="office"></canvas>
+        <div class="legend"><span><i style="background:var(--btc)"></i>оранжевое свечение: агент держит BTC</span><span><i style="background:var(--up)"></i>результат в плюсе</span><span><i style="background:var(--down)"></i>результат в минусе</span><span><i style="background:var(--violet)"></i>кабинеты отделов сверху, стажёры внизу</span></div>
+        <div class="note" style="margin-top:6px">Нажатие на рабочее место открывает карточку сотрудника.</div></div>
       <div class="card chart fade"><h3>Результат отдела, $</h3>
         <div class="range"><button data-r="day" class="${range === "day" ? "active" : ""}">День</button><button data-r="week" class="${range === "week" ? "active" : ""}">Неделя</button><button data-r="all" class="${range === "all" ? "active" : ""}">Всё время</button></div>
         <canvas id="chart"></canvas><div class="tip" id="tip"></div><div class="note" id="chart-note"></div></div>
       ${allocHTML(s)}
       ${approvalsHTML(s)}
       <div class="card fade"><h3>Последние события</h3><ul class="events">${eventsHTML(s.events.slice(0, 8))}</ul></div>`;
+  }
+
+
+  // ---------- раскрывающаяся строка агента ----------
+  const mm = (m) => ":" + String(m).padStart(2, "0");
+  const hhmm = (ts) => (ts ? astanaTime(new Date(ts * 1000)) : "—");
+  function agentRow(a, opts = {}) {
+    const isIntern = a.status === "intern";
+    const nameShort = esc(a.name);
+    const nextIn = a.next_decision_ts ? Math.max(0, Math.round((a.next_decision_ts - Date.now() / 1000) / 60)) : null;
+    return `<details class="acc ${a.status}" data-name="${nameShort}">
+      <summary>
+        <div class="acc-name"><b>${nameShort}</b><span class="badge ${a.status}">${STATUS[a.status] || a.status}</span></div>
+        <div class="acc-time num" title="Минута часа, в которую агент принимает решение">${mm(a.slot_minute)}</div>
+        <div class="acc-pnl num ${cls(a.pnl_24h)}">${sign(a.pnl_24h)} $<small>24 ч</small></div>
+        <div class="acc-pnl num ${cls(a.pnl_total)}">${sign(a.pnl_total)} $<small>всего</small></div>
+        <div class="acc-arrow">›</div>
+      </summary>
+      <div class="acc-body">
+        <div class="note">${esc(a.description || a.strategy)}</div>
+        <div class="kv">
+          <div><span>Капитал</span><b class="num">${fmt(a.equity)} $</b></div>
+          <div><span>Сегодня</span><b class="num ${cls(a.pnl_day)}">${sign(a.pnl_day)} $</b></div>
+          <div><span>В BTC</span><b class="num">${fmt(a.exposure * 100, 0)}%</b></div>
+          <div><span>Просадка</span><b class="num">${fmt(a.drawdown * 100, 1)}%</b></div>
+          <div><span>Сделок · побед</span><b class="num">${a.trades} · ${fmt(a.win_rate * 100, 0)}%</b></div>
+          <div><span>${isIntern ? "На стажировке" : "В команде"}</span><b class="num">${a.days} дн.</b></div>
+          <div><span>Решал</span><b class="num">${hhmm(a.decided_at)}</b></div>
+          <div><span>Следующее</span><b class="num">${hhmm(a.next_decision_ts)}${nextIn != null ? ` <span class="muted">(через ${nextIn} мин)</span>` : ""}</b></div>
+        </div>
+        <div class="bar"><i style="width:${Math.round(a.exposure * 100)}%"></i></div>
+        <div class="last"><span class="tag">${a.last_action || "—"}</span> ${esc(a.last_reason || "решений ещё не было")}</div>
+        <div style="margin-top:8px"><button class="btn open-agent" data-name="${nameShort}">Открыть карточку и журнал</button></div>
+      </div>
+    </details>`;
   }
 
   // ---------- команда ----------
@@ -123,24 +159,31 @@
     const fired = s.agents.filter((a) => a.status === "fired");
     const sorted = [...alive].sort((a, b) => b.pnl_total - a.pnl_total);
     return `<h2 class="sec">Команда · ${alive.length} из ${s.team_size}</h2>
-      <div class="note" style="margin-bottom:8px">Каждый агент торгует своими 1000 $ по своей теории. Отсортированы по результату за всё время. Решения раз в час, через риск-менеджера.</div>
-      <div class="grid">${sorted.map(agentCard).join("")}</div>
-      ${fired.length ? `<h2 class="sec">Уволенные · ${fired.length}</h2><div class="grid">${fired.map(agentCard).join("")}</div>` : ""}`;
+      <div class="note" style="margin-bottom:8px">Каждый агент торгует своими 1000 $ по своей теории и принимает решение раз в час в свою минуту (колонка с двоеточием). Нажмите на строку, чтобы раскрыть.</div>
+      <div class="card list"><div class="acc-head"><span>Агент</span><span>Минута</span><span>За 24 ч</span><span>За всё время</span><span></span></div>${sorted.map((a) => agentRow(a)).join("")}</div>
+      ${fired.length ? `<h2 class="sec">Уволенные · ${fired.length}</h2><div class="card list">${fired.map((a) => agentRow(a)).join("")}</div>` : ""}`;
   }
 
   // ---------- стажёры ----------
   function internsHTML(s) {
-    const rows = s.interns.map((a) => `<tr class="link" data-name="${esc(a.name)}"><td>${esc(a.name)}</td><td class="muted">${esc(a.strategy)}</td><td class="r num">${a.days}</td>
-      <td class="r num ${cls(a.pnl_total)}">${sign(a.pnl_total)} $</td><td class="r num">${fmt(a.drawdown * 100, 1)}%</td><td class="r num">${a.trades}</td><td class="r num">${fmt(a.exposure * 100, 0)}%</td></tr>`).join("");
+    const names = new Set(s.interns.map((a) => a.name));
+    const feed = (s.decisions || []).filter((d) => names.has(d.agent)).slice(0, 25);
     const ready = s.interns.filter((a) => a.days >= 14).length;
+    const inBtc = s.interns.filter((a) => a.exposure > 0).length;
+    const traded = s.interns.filter((a) => a.trades > 0).length;
+    const best = s.interns[0];
+    const nextUp = [...s.interns].filter((a) => a.next_decision_ts).sort((a, b) => a.next_decision_ts - b.next_decision_ts)[0];
     return `<h2 class="sec">Стажёры · ${s.interns.length} из ${s.intern_count}</h2>
       <div class="card"><div class="stat">
-        <div><div class="k">Торгуют в тени</div><div class="v num">${s.interns.length}</div></div>
+        <div><div class="k">В позиции (в BTC)</div><div class="v num">${inBtc} <span class="muted" style="font-size:13px">из ${s.interns.length}</span></div></div>
+        <div><div class="k">Уже торговали</div><div class="v num">${traded}</div></div>
         <div><div class="k">Прошли 14 дней</div><div class="v num">${ready}</div></div>
-        <div><div class="k">Лучший</div><div class="v num ${cls(s.interns[0]?.pnl_total)}">${s.interns[0] ? sign(s.interns[0].pnl_total) + " $" : "—"}</div></div>
+        <div><div class="k">Лучший</div><div class="v num ${cls(best?.pnl_total)}">${best ? sign(best.pnl_total) + " $" : "—"}</div><div class="note">${best ? esc(best.name) : ""}</div></div>
+        <div><div class="k">Следующий решает</div><div class="v" style="font-size:14px">${nextUp ? `${esc(nextUp.name)} в ${hhmm(nextUp.next_decision_ts)}` : "—"}</div></div>
       </div>
-      <div class="note" style="margin-top:10px">Стажёров подбирает отдел исследований из ${families ? families.filter((f) => !f.llm).length : "14"} семейств стратегий. Они торгуют на своих демосчетах и не входят в капитал отдела. Через 14 дней лучший стажёр предлагается на замену худшему в команде, а при увольнении занимает место сразу. Просадка 10% отчисляет стажёра, его место занимает новый кандидат.</div></div>
-      <div class="card"><h3>Рейтинг стажёров</h3>${s.interns.length ? `<div class="tbl"><table><tr><th>Стажёр</th><th>Стратегия</th><th class="r">Дней</th><th class="r">Всего</th><th class="r">Просадка</th><th class="r">Сделок</th><th class="r">В BTC</th></tr>${rows}</table></div>` : `<div class="note">Стажёры появятся после ближайшего часа.</div>`}</div>`;
+      <div class="note" style="margin-top:10px">Стажёры торгуют в тени на своих демосчетах по 1000 $, каждый в свою минуту часа. Первые часы у большинства нули: стратегия ждёт своего сигнала, а сделка стоит комиссию, поэтому без сигнала они сидят в долларах. Через 14 дней лучший предлагается на замену худшему в команде, при просадке 10% стажёр отчисляется.</div></div>
+      <div class="card list"><h3>Рейтинг · нажмите на строку</h3><div class="acc-head"><span>Стажёр</span><span>Минута</span><span>За 24 ч</span><span>За всё время</span><span></span></div>${s.interns.map((a) => agentRow(a)).join("")}</div>
+      <div class="card"><h3>Что они делают прямо сейчас · последние решения</h3>${feed.length ? `<ul class="feed">${feed.map((d) => `<li><time>${hhmm(d.ts)}</time><b>${esc(d.agent)}</b><span class="tag ${d.action === "BUY" ? "buy" : d.action === "SELL" ? "sell" : ""}">${d.action} ${fmt(d.target_exposure * 100, 0)}%</span><span class="muted">${esc(d.reason)}</span></li>`).join("")}</ul>` : '<div class="note">Первые решения появятся в ближайший час, у каждого стажёра в свою минуту.</div>'}</div>`;
   }
 
   // ---------- наука ----------
@@ -275,7 +318,10 @@
     const html = tab === "home" ? homeHTML(state) : tab === "team" ? teamHTML(state) : tab === "interns" ? internsHTML(state) : tab === "lab" ? labHTML(state) : reportsHTML(state);
     view.innerHTML = `<div class="fade">${html}</div>`;
     tickClock();
-    $$("[data-name]", view).forEach((el) => el.addEventListener("click", () => openAgent(el.dataset.name)));
+    $$("[data-name]", view).forEach((el) => { if (!el.classList.contains("acc")) el.addEventListener("click", (e) => { if (e.target.closest(".acc")) return; openAgent(el.dataset.name); }); });
+    $$(".open-agent", view).forEach((b) => b.addEventListener("click", (e) => { e.preventDefault(); openAgent(b.dataset.name); }));
+    // помнить, какие строки раскрыты, между обновлениями
+    $$("details.acc", view).forEach((d) => { if (openRows.has(d.dataset.name)) d.open = true; d.addEventListener("toggle", () => { if (d.open) openRows.add(d.dataset.name); else openRows.delete(d.dataset.name); }); });
     $$(".approval button", view).forEach((b) => b.addEventListener("click", async () => { await api(`/api/approvals/${b.dataset.id}/${b.dataset.d}`, { method: "POST" }); refresh(true); }));
     $$(".range button", view).forEach((b) => b.addEventListener("click", () => { range = b.dataset.r; $$(".range button", view).forEach((x) => x.classList.toggle("active", x === b)); drawChart(); }));
     const rb = $("#btn-research", view);

@@ -270,19 +270,21 @@ class Engine:
     def state(self) -> dict:
         price = self.last_price
         now_i = int(time.time())
-        snaps = []
-        for a in self.agents:
-            if a.status in {"intern", "dropped"}:
-                continue
+        step = self._step_seconds()
+
+        def enrich(a: Agent) -> dict:
             d = a.snapshot(price).__dict__
-            d["next_decision_ts"] = self.next_decision_ts(a, now_i) if a.status in {"active", "paused"} else 0
-            snaps.append(d)
-        interns = []
-        for a in self.agents:
-            if is_intern(a):
-                d = a.snapshot(price).__dict__
-                d["days"] = round(max(0.0, ((a.last_ts_seen or self.last_tick_ts) - a.hired_at) / 86400), 1)
-                interns.append(d)
+            d["next_decision_ts"] = self.next_decision_ts(a, now_i) if a.status in {"active", "paused", "intern"} else 0
+            d["decided_at"] = (a.last_decided_ts + step + a.slot_minute * 60) if a.last_decided_ts else 0
+            base = self.j.equity_at(a.name, now_i - 86400)
+            if base is None or a.hired_at > now_i - 86400:
+                base = a.start_balance()
+            d["pnl_24h"] = round(a.equity(price) - base, 2)
+            d["days"] = round(max(0.0, (now_i - a.hired_at) / 86400), 1)
+            return d
+
+        snaps = [enrich(a) for a in self.agents if a.status not in {"intern", "dropped"}]
+        interns = [enrich(a) for a in self.agents if is_intern(a)]
         interns.sort(key=lambda d: d["pnl_total"], reverse=True)
         alive = [s for s in snaps if s["status"] != "fired"]
         total = sum(s["equity"] for s in alive)
@@ -311,6 +313,7 @@ class Engine:
             "bench": self.j.bench()[:10],
             "approvals": self.j.pending_approvals(),
             "events": self.j.recent_events(40),
+            "decisions": self.j.recent_decisions(None, 60),
         }
 
     def apply_approval(self, approval_id: int, approve: bool) -> dict | None:

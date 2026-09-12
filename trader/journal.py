@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS equity (
     ts INTEGER NOT NULL, agent TEXT NOT NULL, equity REAL NOT NULL, price REAL NOT NULL,
     PRIMARY KEY (ts, agent)
 );
+CREATE INDEX IF NOT EXISTS idx_equity_agent_ts ON equity(agent, ts);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts INTEGER NOT NULL, kind TEXT NOT NULL, agent TEXT, message TEXT NOT NULL, data TEXT
@@ -156,6 +157,14 @@ class Journal:
 
     def recent_events(self, limit: int = 100) -> list[dict]:
         return self._rows("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,))
+
+    def equity_at(self, agent: str, ts: int) -> float | None:
+        """Последнее известное значение капитала агента на момент ts (или None)."""
+        rows = self._rows("SELECT equity FROM equity WHERE agent=? AND ts<=? ORDER BY ts DESC LIMIT 1", (agent, ts))
+        if rows:
+            return rows[0]["equity"]
+        rows = self._rows("SELECT equity FROM equity WHERE agent=? ORDER BY ts ASC LIMIT 1", (agent,))
+        return rows[0]["equity"] if rows else None
 
     def equity_curve(self, agent: str, limit: int = 500) -> list[dict]:
         rows = self._rows("SELECT ts, equity, price FROM equity WHERE agent=? ORDER BY ts DESC LIMIT ?", (agent, limit))

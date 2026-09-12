@@ -1,276 +1,272 @@
-/* Изометрический торговый зал. Рисуется из живого состояния отдела.
-   window.startFloor(canvas, state, equityPoints, onAgentClick) -> { stop, fit } */
+/* Офис отдела: вид сверху, мягкая графика, без панорамирования.
+   window.startFloor(canvas, state, equityPoints, onAgentClick) -> { stop, layout } */
 (() => {
   const C = {
-    bg: "#1a1432", floorA: "#2a2150", floorB: "#2f2558", grid: "rgba(170,150,255,.10)",
-    wall: "#221a44", wallEdge: "rgba(180,160,255,.25)",
-    deskTop: "#c4b3ff", deskSide: "#8d78d8", deskFront: "#6c58bf", monitor: "#120d26", screenOn: "#7cf2ff", screenIdle: "#4a3f7a",
-    tag: "#22193f", tagText: "#efe9ff", up: "#4ade80", down: "#f87171", warn: "#fbbf24", btc: "#f7931a",
-    glass: "rgba(150,130,255,.16)", glassEdge: "rgba(200,185,255,.55)", bubble: "#f4f1ff", bubbleText: "#241b45",
-    skin: ["#f2c9a0", "#d9a577", "#b07a4f", "#f7d7bd"], hair: ["#2b1d3a", "#5a3b2e", "#e0b04a", "#8b3a3a", "#1f2a5a"],
-    shirt: ["#ff7b5c", "#5cb8ff", "#8a7bff", "#ffd166", "#4ade80", "#f472b6", "#94a3b8"],
+    floor1: "#1d1a30", floor2: "#181628", carpet: "rgba(255,255,255,.025)",
+    room: "rgba(255,255,255,.045)", roomEdge: "rgba(255,255,255,.10)", rug: "rgba(255,255,255,.05)",
+    wood: "#5b4f8a", woodDark: "#4a4073", desk: "#6f65b3", deskEdge: "#8b82cf", chair: "#3b3560",
+    monitor: "#0f0d1f", glowIdle: "rgba(124,200,255,.35)", glowBtc: "rgba(247,147,26,.85)",
+    text: "#f2efff", muted: "#a49dcf", dim: "#6f689a",
+    up: "#4ade80", down: "#f87171", warn: "#fbbf24", btc: "#f7931a", violet: "#a99cff", teal: "#7cd8ff",
+    plant: ["#3f8f5a", "#4faa6b", "#2f7449"], sofa: "#8d6fb8",
+    avatar: ["#ff8a65", "#64b5f6", "#ba9cff", "#ffd54f", "#4dd0a1", "#f48fb1", "#90a4ae", "#ffab91", "#80cbc4", "#c5e1a5", "#b39ddb"],
   };
-  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const hash = (s) => { let h = 0; for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return h; };
   const short = (n) => n.replace(/\s*\(.*\)/, "").replace("Нейро-", "Н-");
   const money = (v) => (v > 0 ? "+" : "") + v.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " $";
-  const hash = (s) => { let h = 0; for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return h; };
+  const initial = (n) => short(n).replace(/[^A-Za-zА-Яа-яЁё0-9]/g, "").slice(0, 1).toUpperCase() || "•";
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const FONT = "-apple-system, Segoe UI, Roboto, Inter, sans-serif";
 
   window.startFloor = function startFloor(canvas, state, equityPoints, onAgentClick) {
     const ctx = canvas.getContext("2d");
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     const team = state.agents.filter((a) => a.status !== "fired");
-    const interns = state.interns || [];
+    const interns = (state.interns || []).slice(0, 20);
     const now = state.now;
-    // --- сетка ---
-    const TW = 44, TH = 22;                          // размер клетки в мировых координатах
-    const iso = (gx, gy) => ({ x: (gx - gy) * TW / 2, y: (gx + gy) * TH / 2 });
-    const view = { x: 0, y: 0, s: 1 };
-    let W = 0, H = 0, HUD = 0, raf = 0, stopped = false;
+    let W = 0, H = 0, raf = 0, stopped = false;
+    const L = {};           // раскладка
+    const desks = [];       // {a, x, y, w, h, kind, color}
+    const bubbles = [];
+    const couriers = [];
+    let nextBubble = 0, nextCourier = 0;
 
-    // --- расстановка ---
-    const slots = [];
-    const teamRows = [[4, 9], [4, 11], [4, 13]];
-    const GW = 20, GH = 16;  // размер пола в клетках
-    team.forEach((a, i) => { const row = Math.floor(i / 4), col = i % 4; slots.push({ kind: "team", a, gx: 6 + col * 3.2, gy: 8 + row * 2.6 }); });
-    interns.slice(0, 20).forEach((a, i) => { const row = Math.floor(i / 5), col = i % 5; slots.push({ kind: "intern", a, gx: 8 + col * 2.3, gy: 0.8 + row * 1.8 }); });
-    const rooms = [
-      { key: "head", label: "Руководитель", gx: 0.5, gy: 0.5, w: 3.2, h: 3.2, color: "#e8e2ff", people: 1 },
-      { key: "risk", label: "Риск-менеджер", gx: 0.5, gy: 4.5, w: 3.2, h: 3.2, color: C.warn, people: 1 },
-      { key: "lab", label: "Исследования", gx: 0.5, gy: 8.5, w: 3.2, h: 4, color: "#9085e9", people: 2 },
-    ];
-    // персонажи
-    const people = [];
-    const mkPerson = (name, gx, gy, extra = {}) => { const h = hash(name); return { name, gx, gy, skin: C.skin[h % 4], hair: C.hair[(h >> 3) % 5], shirt: C.shirt[(h >> 6) % 7], phase: (h % 100) / 16, ...extra }; };
-    slots.forEach((s) => { s.p = mkPerson(s.a.name, s.gx - 0.42, s.gy - 0.42, { slot: s }); people.push(s.p); });
-    rooms.forEach((r) => { for (let i = 0; i < r.people; i++) { const p = mkPerson(r.key + i, r.gx + 0.9 + i * 1.1, r.gy + 1.6 + (i % 2) * 0.5, { room: r, stand: true }); people.push(p); } });
-
-    // --- реплики ---
     const lastEvent = (kinds) => (state.events || []).find((e) => kinds.includes(e.kind));
-    const roomSay = {
+    const say = {
       head: () => { const e = lastEvent(["report", "hire", "fire", "approval"]); return e ? e.message : "Слежу за отделом"; },
-      risk: () => { const paused = team.filter((a) => a.status === "paused").length; return state.department.halted ? "Отдел остановлен до завтра" : paused ? `${paused} на паузе до конца дня` : "Лимиты в норме, торгуем"; },
+      risk: () => { const p = team.filter((a) => a.status === "paused").length; return state.department.halted ? "Отдел остановлен до завтра" : p ? `${p} на паузе до конца дня` : "Лимиты в норме, торгуем"; },
       lab: () => { const e = lastEvent(["research", "retune", "lesson", "intern", "drop"]); return e ? e.message : `${interns.length} стажёров на испытании`; },
     };
-    const bubbles = []; // {p, text, until}
-    let nextBubble = 0;
-    const walkers = [];
-    let nextWalker = 0;
 
-    // --- размещение по экрану ---
+    // ---------- раскладка ----------
     function layout() {
-      W = canvas.clientWidth; H = canvas.clientHeight;
+      W = canvas.clientWidth;
+      const mobile = W < 640;
+      const pad = 12, gap = 10;
+      const HUD = 116;
+      const roomH = mobile ? 118 : 140;
+      const teamCols = mobile ? 4 : 6, internCols = mobile ? 5 : 10;
+      const teamRows = Math.ceil(team.length / teamCols), internRows = Math.ceil(interns.length / internCols);
+      const deskW = Math.floor((W - pad * 2 - gap * (teamCols - 1)) / teamCols), deskH = mobile ? 92 : 100;
+      const ideskW = Math.floor((W - pad * 2 - gap * (internCols - 1)) / internCols), ideskH = mobile ? 66 : 72;
+      let y = HUD + 12;
+      L.hud = { x: 0, y: 0, w: W, h: HUD };
+      const rw = Math.floor((W - pad * 2 - gap * 2) / 3);
+      L.rooms = [
+        { key: "head", label: "Руководитель", x: pad, y, w: rw, h: roomH, color: C.text },
+        { key: "risk", label: "Риск-менеджер", x: pad + rw + gap, y, w: rw, h: roomH, color: C.warn },
+        { key: "lab", label: "Исследования", x: pad + (rw + gap) * 2, y, w: rw, h: roomH, color: C.violet },
+      ];
+      y += roomH + 26;
+      L.teamLabel = { x: pad, y: y - 8 };
+      desks.length = 0;
+      team.forEach((a, i) => {
+        const r = Math.floor(i / teamCols), c = i % teamCols;
+        desks.push({ a, kind: "team", x: pad + c * (deskW + gap), y: y + r * (deskH + gap), w: deskW, h: deskH, color: C.avatar[hash(a.name) % C.avatar.length], phase: (hash(a.name) % 100) / 16 });
+      });
+      y += teamRows * (deskH + gap) + 18;
+      L.internLabel = { x: pad, y: y - 2 };
+      L.internZone = { x: pad - 4, y: y + 6, w: W - pad * 2 + 8, h: internRows * (ideskH + gap) + 12 };
+      interns.forEach((a, i) => {
+        const r = Math.floor(i / internCols), c = i % internCols;
+        desks.push({ a, kind: "intern", x: pad + c * (ideskW + gap), y: y + 12 + r * (ideskH + gap), w: ideskW, h: ideskH, color: C.avatar[hash(a.name) % C.avatar.length], phase: (hash(a.name) % 100) / 16 });
+      });
+      y += L.internZone.h + 22;
+      H = Math.max(y, 360);
+      canvas.style.height = H + "px";
       canvas.width = W * dpr; canvas.height = H * dpr;
-      HUD = Math.min(120, Math.max(92, H * 0.26));
-      fit();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
-    function bounds() {
-      // границы по содержимому, а не по всему полу
-      const pts = [];
-      rooms.forEach((r) => { pts.push(iso(r.gx, r.gy)); pts.push(iso(r.gx + r.w, r.gy + r.h)); pts.push(iso(r.gx, r.gy + r.h)); pts.push(iso(r.gx + r.w, r.gy)); });
-      slots.forEach((q) => { pts.push(iso(q.gx - 1, q.gy - 1)); pts.push(iso(q.gx + 1, q.gy + 1)); });
-      const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
-      return { minx: Math.min(...xs), maxx: Math.max(...xs), miny: Math.min(...ys), maxy: Math.max(...ys) };
-    }
-    function fit() {
-      const b = bounds();
-      const s = Math.min((W - 24) / (b.maxx - b.minx), (H - HUD - 40) / (b.maxy - b.miny + 30));
-      view.s = s; view.x = W / 2 - ((b.minx + b.maxx) / 2) * s; view.y = HUD + 46 - b.miny * s;
-    }
-    const P = (gx, gy) => { const p = iso(gx, gy); return { x: view.x + p.x * view.s, y: view.y + p.y * view.s }; };
 
-    // --- примитивы ---
-    function tile(gx, gy, fill, stroke) {
-      const a = P(gx - 0.5, gy - 0.5), b = P(gx + 0.5, gy - 0.5), c = P(gx + 0.5, gy + 0.5), d = P(gx - 0.5, gy + 0.5);
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.lineTo(c.x, c.y); ctx.lineTo(d.x, d.y); ctx.closePath();
-      if (fill) { ctx.fillStyle = fill; ctx.fill(); } if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); }
+    // ---------- примитивы ----------
+    function rr(x, y, w, h, r, fill, stroke, lw = 1) {
+      ctx.beginPath(); ctx.roundRect(x, y, w, h, r);
+      if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+      if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); }
     }
-    function box(gx, gy, w, h, z, top, left, right, edge) {
-      // параллелепипед: основание (gx,gy) размером w×h клеток, высота z (в мировых единицах)
-      const s = view.s, zz = z * s;
-      const a = P(gx, gy), b = P(gx + w, gy), c = P(gx + w, gy + h), d = P(gx, gy + h);
-      ctx.beginPath(); ctx.moveTo(d.x, d.y); ctx.lineTo(c.x, c.y); ctx.lineTo(c.x, c.y - zz); ctx.lineTo(d.x, d.y - zz); ctx.closePath(); ctx.fillStyle = left; ctx.fill(); if (edge) { ctx.strokeStyle = edge; ctx.stroke(); }
-      ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(b.x, b.y); ctx.lineTo(b.x, b.y - zz); ctx.lineTo(c.x, c.y - zz); ctx.closePath(); ctx.fillStyle = right; ctx.fill(); if (edge) ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(a.x, a.y - zz); ctx.lineTo(b.x, b.y - zz); ctx.lineTo(c.x, c.y - zz); ctx.lineTo(d.x, d.y - zz); ctx.closePath(); ctx.fillStyle = top; ctx.fill(); if (edge) ctx.stroke();
+    function text(t, x, y, size, color, weight = 400, align = "left", base = "alphabetic") {
+      ctx.font = `${weight} ${size}px ${FONT}`; ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = base; ctx.fillText(t, x, y);
     }
-    function pill(x, y, text, bg, fg, size = 10, pad = 5) {
-      ctx.font = `600 ${size}px -apple-system, Segoe UI, Roboto, sans-serif`;
-      const w = ctx.measureText(text).width + pad * 2, h = size + 6;
-      ctx.beginPath(); ctx.roundRect(x - w / 2, y - h / 2, w, h, h / 2); ctx.fillStyle = bg; ctx.fill();
-      ctx.fillStyle = fg; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(text, x, y + 0.5);
+    function pill(x, y, t, bg, fg, size = 10, padX = 6, align = "center") {
+      ctx.font = `600 ${size}px ${FONT}`;
+      const w = ctx.measureText(t).width + padX * 2, h = size + 7;
+      const bx = align === "center" ? x - w / 2 : x;
+      rr(bx, y - h / 2, w, h, h / 2, bg);
+      ctx.fillStyle = fg; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(t, bx + w / 2, y + 0.5);
       return w;
     }
-    function bubble(x, y, text, maxW) {
-      ctx.font = "10px -apple-system, Segoe UI, Roboto, sans-serif";
-      const words = text.split(" "), lines = []; let cur = "";
-      for (const w of words) { const t = cur ? cur + " " + w : w; if (ctx.measureText(t).width > maxW && cur) { lines.push(cur); cur = w; } else cur = t; if (lines.length === 3) break; }
+    function shadow(fn, blur = 10, color = "rgba(0,0,0,.35)", oy = 3) { ctx.save(); ctx.shadowBlur = blur; ctx.shadowColor = color; ctx.shadowOffsetY = oy; fn(); ctx.restore(); }
+    function plant(x, y, s, t) {
+      const sway = Math.sin(t / 900 + x) * 1.2;
+      rr(x - s * 0.45, y + s * 0.2, s * 0.9, s * 0.5, 4, "#4a3f6b");
+      [[0, -0.3, 0.55], [-0.35, -0.05, 0.42], [0.35, -0.05, 0.42], [0, 0.1, 0.36]].forEach(([dx, dy, r], i) => {
+        ctx.beginPath(); ctx.arc(x + dx * s + sway * (i ? 0.5 : 1), y + dy * s, r * s, 0, Math.PI * 2); ctx.fillStyle = C.plant[i % 3]; ctx.fill();
+      });
+    }
+    function avatar(x, y, r, color, letter, t, phase, ring) {
+      if (ring) { const p = 0.5 + 0.5 * Math.sin(t / 600 + phase); ctx.beginPath(); ctx.arc(x, y, r + 4 + p * 2, 0, Math.PI * 2); ctx.fillStyle = `rgba(247,147,26,${0.18 + 0.22 * p})`; ctx.fill(); }
+      shadow(() => { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); const g = ctx.createRadialGradient(x - r * 0.4, y - r * 0.5, r * 0.2, x, y, r); g.addColorStop(0, "#ffffff"); g.addColorStop(0.08, color); g.addColorStop(1, color); ctx.fillStyle = g; ctx.fill(); }, 8, "rgba(0,0,0,.4)", 2);
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.strokeStyle = "rgba(255,255,255,.35)"; ctx.lineWidth = 1.2; ctx.stroke();
+      text(letter, x, y + 0.5, r * 1.05, "#1a1432", 700, "center", "middle");
+    }
+    function bubble(x, y, msg, maxW, alpha) {
+      ctx.save(); ctx.globalAlpha = alpha;
+      ctx.font = `11px ${FONT}`;
+      const words = msg.split(" "), lines = []; let cur = "";
+      for (const w of words) { const tt = cur ? cur + " " + w : w; if (ctx.measureText(tt).width > maxW && cur) { lines.push(cur); cur = w; } else cur = tt; if (lines.length === 3) break; }
       if (cur && lines.length < 3) lines.push(cur);
-      if (lines.length === 3 && words.length > lines.join(" ").split(" ").length) lines[2] = lines[2].replace(/\s?\S*$/, "…");
-      const w = Math.min(maxW, Math.max(...lines.map((l) => ctx.measureText(l).width))) + 14, h = lines.length * 13 + 10;
-      const bx = clamp(x - w / 2, 4, W - w - 4), by = y - h - 10;
-      ctx.beginPath(); ctx.roundRect(bx, by, w, h, 7); ctx.fillStyle = C.bubble; ctx.fill();
-      ctx.beginPath(); ctx.moveTo(x - 4, by + h); ctx.lineTo(x + 4, by + h); ctx.lineTo(x, by + h + 6); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = C.bubbleText; ctx.textAlign = "left"; ctx.textBaseline = "top";
-      lines.forEach((l, i) => ctx.fillText(l, bx + 7, by + 6 + i * 13));
+      if (lines.length === 3 && lines.join(" ").length < msg.length) lines[2] = lines[2].replace(/\s?\S*$/, "…");
+      const w = Math.min(maxW, Math.max(...lines.map((l) => ctx.measureText(l).width))) + 18, h = lines.length * 14 + 12;
+      const bx = clamp(x - w / 2, 6, W - w - 6), by = y - h - 12;
+      shadow(() => rr(bx, by, w, h, 9, "#f7f5ff"), 14, "rgba(0,0,0,.45)", 4);
+      ctx.beginPath(); ctx.moveTo(x - 5, by + h - 0.5); ctx.lineTo(x + 5, by + h - 0.5); ctx.lineTo(x, by + h + 7); ctx.closePath(); ctx.fillStyle = "#f7f5ff"; ctx.fill();
+      ctx.fillStyle = "#241b45"; ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.font = `11px ${FONT}`;
+      lines.forEach((l, i) => ctx.fillText(l, bx + 9, by + 6 + i * 14));
+      ctx.restore();
     }
-    function person(p, t, scale = 1) {
-      const s = view.s * 0.95 * scale, pos = P(p.gx, p.gy);
-      const bob = Math.sin(t / 500 + p.phase) * 1.0 * s;
-      const x = pos.x, y = pos.y - bob;
-      const stand = p.stand || p.up;
-      const bodyH = (stand ? 14 : 11) * s, bodyW = 11 * s, headS = 9 * s;
-      ctx.fillStyle = "rgba(0,0,0,.25)"; ctx.beginPath(); ctx.ellipse(x, pos.y + 1.5 * s, 7 * s, 3 * s, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = p.shirt; ctx.fillRect(x - bodyW / 2, y - bodyH, bodyW, bodyH);
-      ctx.fillStyle = p.skin; ctx.fillRect(x - headS / 2, y - bodyH - headS, headS, headS);
-      ctx.fillStyle = p.hair; ctx.fillRect(x - headS / 2, y - bodyH - headS, headS, 3 * s);
-      ctx.fillStyle = "#1a1432"; ctx.fillRect(x - 2.4 * s, y - bodyH - headS + 4.5 * s, 1.6 * s, 1.6 * s); ctx.fillRect(x + 0.8 * s, y - bodyH - headS + 4.5 * s, 1.6 * s, 1.6 * s);
-      ctx.fillStyle = p.skin; ctx.fillRect(x - bodyW / 2 - 2.5 * s, y - bodyH + 1 * s, 2.5 * s, 6 * s); ctx.fillRect(x + bodyW / 2, y - bodyH + 1 * s, 2.5 * s, 6 * s);
-      if (p.up) { ctx.fillStyle = p.skin; ctx.fillRect(x + bodyW / 2, y - bodyH - 3 * s + Math.sin(t / 150) * s, 2.5 * s, 7 * s); }
-      return { x, y: y - bodyH - headS };
+
+    // ---------- элементы офиса ----------
+    function drawFloor(t) {
+      const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, C.floor1); g.addColorStop(1, C.floor2);
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+      for (let x = 0; x < W; x += 48) for (let y = L.hud.h; y < H; y += 48) if (((x / 48 + y / 48) | 0) % 2) { ctx.fillStyle = C.carpet; ctx.fillRect(x, y, 48, 48); }
+      // мягкий свет от ламп
+      [[W * 0.25, L.hud.h + 60], [W * 0.75, L.hud.h + 60], [W * 0.5, H * 0.65]].forEach(([x, y]) => {
+        const r = Math.max(W, H) * 0.35, lg = ctx.createRadialGradient(x, y, 0, x, y, r); lg.addColorStop(0, "rgba(255,230,190,.07)"); lg.addColorStop(1, "rgba(255,230,190,0)"); ctx.fillStyle = lg; ctx.fillRect(x - r, y - r, r * 2, r * 2);
+      });
     }
-    function desk(slot, t) {
-      const { gx, gy, a, kind } = slot;
-      const size = kind === "team" ? 1 : 0.8;
-      const inPos = a.exposure > 0;
-      box(gx - size * 0.55, gy - size * 0.3, size * 1.1, size * 0.6, 7, C.deskTop, C.deskFront, C.deskSide);
-      // монитор
-      const m = P(gx, gy - size * 0.05); const s = view.s;
-      const mw = 11 * s * size, mh = 8 * s * size, my = m.y - 7 * s - mh - 2 * s;
-      ctx.fillStyle = C.monitor; ctx.fillRect(m.x - mw / 2 - 1, my - 1, mw + 2, mh + 2);
-      const blink = 0.55 + 0.45 * Math.sin(t / 700 + slot.p.phase * 3);
-      ctx.fillStyle = inPos ? `rgba(247,147,26,${0.5 + 0.5 * blink})` : `rgba(124,242,255,${0.25 + 0.35 * blink})`;
-      ctx.fillRect(m.x - mw / 2, my, mw, mh);
-      if (inPos) { ctx.fillStyle = "#fff3"; ctx.fillRect(m.x - mw * 0.3, my + mh * 0.3, mw * 0.15, mh * 0.5); ctx.fillRect(m.x, my + mh * 0.15, mw * 0.15, mh * 0.6); }
-      ctx.fillStyle = C.monitor; ctx.fillRect(m.x - 1.5 * s, my + mh + 1, 3 * s, 2 * s);
-    }
-    function tags(slot) {
-      const { gx, gy, a, kind } = slot;
-      const top = P(gx, gy - 0.9); const s = view.s;
-      const y = top.y - 22 * s - (kind === "team" ? 12 : 8);
-      const pnl = a.pnl_total, col = pnl > 0 ? C.up : pnl < 0 ? C.down : "#9d95c4";
-      if (kind === "intern") { if (view.s < 0.7) return; pill(top.x, y, short(a.name).slice(0, 12), "rgba(34,25,63,.85)", "#c9c1e8", 8, 4); return; }
-      const name = short(a.name).slice(0, 12);
-      const w = pill(top.x, y, name, C.tag, C.tagText, 10, 6);
-      ctx.beginPath(); ctx.arc(top.x + w / 2 + 2, y - 7, 4, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill();
-      if (view.s >= 0.9) pill(top.x, y - 15, money(pnl), "rgba(19,15,38,.9)", col, 9, 4);
-      if (a.status === "paused") pill(top.x - w / 2 - 2, y - 7, "⏸", "rgba(251,191,36,.25)", C.warn, 8, 3);
-    }
-    function room(r, t) {
-      box(r.gx, r.gy, r.w, r.h, 26, "rgba(0,0,0,0)", C.glass, C.glass, C.glassEdge);
-      for (let i = 0; i < r.w; i++) for (let j = 0; j < r.h; j++) tile(r.gx + i + 0.5, r.gy + j + 0.5, "rgba(150,130,255,.08)");
-      const c = P(r.gx + r.w / 2, r.gy);
-      pill(c.x, c.y - 26 * view.s - 12, r.label, r.color, "#1a1432", 10);
-    }
-    function hud(t) {
+    function drawHud(t) {
+      const { w, h } = L.hud;
+      const g = ctx.createLinearGradient(0, 0, 0, h); g.addColorStop(0, "#151228"); g.addColorStop(1, "#1b1730");
+      rr(8, 8, w - 16, h - 12, 14, g, "rgba(255,255,255,.08)");
       const d = state.department, dayPnl = team.reduce((x, a) => x + a.pnl_day, 0);
-      ctx.fillStyle = "#130f26"; ctx.fillRect(0, 0, W, HUD);
-      ctx.fillStyle = "rgba(124,242,255,.06)"; ctx.fillRect(0, HUD - 2, W, 2);
-      ctx.textBaseline = "alphabetic"; ctx.textAlign = "left";
-      ctx.fillStyle = "#8e86b8"; ctx.font = "600 9px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.fillText("ТОРГОВЫЙ ЗАЛ · ТАБЛО ОТДЕЛА · ДЕМОСЧЁТ", 12, 16);
-      ctx.fillStyle = "#f4f1ff"; ctx.font = "700 26px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.fillText(d.equity.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " $", 12, 44);
-      // ближайшие решения
-      const up = (state.upcoming || []).slice(0, 2).map((u) => `${short(u.name)} в ${new Date(u.ts * 1000).toLocaleTimeString("ru-RU", { timeZone: "Asia/Almaty", hour: "2-digit", minute: "2-digit" })}`).join(", ");
-      ctx.font = "600 12px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.fillStyle = dayPnl > 0 ? C.up : dayPnl < 0 ? C.down : "#c9c1e8"; ctx.fillText(money(dayPnl) + " сегодня", 12, 62);
-      ctx.fillStyle = d.pnl > 0 ? C.up : d.pnl < 0 ? C.down : "#c9c1e8"; ctx.fillText(money(d.pnl) + " всего", 12, 78);
-      if (up) { ctx.fillStyle = "#8e86b8"; ctx.font = "9px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.fillText("далее: " + up, 12, 92); }
-      // мини-график
-      const gx0 = Math.max(180, W * 0.42), gw = W - gx0 - 12, gy0 = 22, gh = HUD - 48;
-      ctx.fillStyle = "rgba(255,255,255,.03)"; ctx.fillRect(gx0, gy0, gw, gh);
+      text("ТАБЛО ОТДЕЛА · ДЕМОСЧЁТ", 20, 26, 9, C.dim, 600);
+      text(d.equity.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " $", 20, 52, 24, C.text, 700);
+      text(money(dayPnl) + " сегодня", 20, 69, 12, dayPnl > 0 ? C.up : dayPnl < 0 ? C.down : C.muted, 600);
+      text(money(d.pnl) + " всего", 20, 84, 12, d.pnl > 0 ? C.up : d.pnl < 0 ? C.down : C.muted, 600);
+      const gx0 = Math.max(190, w * 0.45), gw = w - gx0 - 22, gy0 = 20, gh = h - 40;
+      rr(gx0, gy0, gw, gh, 8, "rgba(255,255,255,.03)");
       const pts = equityPoints || [];
       if (pts.length > 1 && gw > 40) {
         const ys = pts.map((p) => p[1]), mn = Math.min(...ys), mx = Math.max(...ys), sp = mx - mn || 1;
-        ctx.beginPath(); ctx.lineWidth = 1.5; ctx.strokeStyle = ys[ys.length - 1] >= ys[0] ? C.screenOn : C.down;
-        pts.forEach((p, i) => { const x = gx0 + (i / (pts.length - 1)) * gw, y = gy0 + gh - ((p[1] - mn) / sp) * (gh - 6) - 3; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-        ctx.stroke();
-        const bl = Math.floor(t / 600) % 2 === 0; if (bl) { const last = pts[pts.length - 1]; const x = gx0 + gw, y = gy0 + gh - ((last[1] - mn) / sp) * (gh - 6) - 3; ctx.fillStyle = ctx.strokeStyle; ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill(); }
-        ctx.fillStyle = "#8e86b8"; ctx.font = "9px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.textAlign = "left"; ctx.fillText("результат отдела, $", gx0 + 4, gy0 + 10);
-      } else { ctx.fillStyle = "#5d5590"; ctx.font = "10px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.fillText("график накапливается", gx0 + 8, gy0 + gh / 2 + 4); }
-      ctx.fillStyle = "#8e86b8"; ctx.font = "9px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.textAlign = "right";
-      ctx.fillText(`${window.astanaClock ? window.astanaClock() : ""} · BTC ${state.price.toLocaleString("ru-RU", { maximumFractionDigits: 0 })} $`, W - 12, 16);
-      // бегущая строка событий
-      const line = (state.events || []).slice(0, 8).map((e) => `${e.message}`).join("     •     ") || "ждём первую свечу";
-      ctx.save(); ctx.beginPath(); ctx.rect(0, HUD - 18, W, 16); ctx.clip();
-      ctx.font = "10px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.textAlign = "left"; ctx.fillStyle = "#b7aee0";
-      const tw = ctx.measureText(line).width + 120; const off = (t / 40) % tw;
-      ctx.fillText(line, W - off, HUD - 6); ctx.fillText(line, W - off + tw, HUD - 6);
-      ctx.restore();
+        const X = (i) => gx0 + 6 + (i / (pts.length - 1)) * (gw - 12), Y = (v) => gy0 + gh - 6 - ((v - mn) / sp) * (gh - 22);
+        const col = ys[ys.length - 1] >= ys[0] ? C.teal : C.down;
+        const fg = ctx.createLinearGradient(0, gy0, 0, gy0 + gh); fg.addColorStop(0, col.replace(")", ",.25)").replace("rgb", "rgba").replace("#7cd8ff", "rgba(124,216,255").replace("#f87171", "rgba(248,113,113")); fg.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.beginPath(); pts.forEach((p, i) => (i ? ctx.lineTo(X(i), Y(p[1])) : ctx.moveTo(X(i), Y(p[1])))); ctx.lineTo(X(pts.length - 1), gy0 + gh); ctx.lineTo(X(0), gy0 + gh); ctx.closePath(); ctx.fillStyle = fg; ctx.fill();
+        ctx.beginPath(); pts.forEach((p, i) => (i ? ctx.lineTo(X(i), Y(p[1])) : ctx.moveTo(X(i), Y(p[1])))); ctx.strokeStyle = col; ctx.lineWidth = 1.8; ctx.stroke();
+        const lp = pts[pts.length - 1]; const pulse = 0.5 + 0.5 * Math.sin(t / 500);
+        ctx.beginPath(); ctx.arc(X(pts.length - 1), Y(lp[1]), 3 + pulse * 2, 0, Math.PI * 2); ctx.fillStyle = col.startsWith("#") ? col + "55" : col; ctx.fill();
+        ctx.beginPath(); ctx.arc(X(pts.length - 1), Y(lp[1]), 2.5, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill();
+        text("результат отдела, $", gx0 + 8, gy0 + 12, 9, C.dim, 600);
+      } else text("график накапливается", gx0 + 10, gy0 + gh / 2 + 4, 10, C.dim);
+      const clock = window.astanaClock ? window.astanaClock() : "";
+      text(`${clock} · BTC ${state.price.toLocaleString("ru-RU", { maximumFractionDigits: 0 })} $`, w - 20, h - 12, 9, C.dim, 500, "right");
+      const up = (state.upcoming || []).slice(0, 2).map((u) => `${short(u.name)} в ${new Date(u.ts * 1000).toLocaleTimeString("ru-RU", { timeZone: "Asia/Almaty", hour: "2-digit", minute: "2-digit" })}`).join(", ");
+      if (up) text("далее решают: " + up, 20, h - 11, 9, C.dim, 500);
+    }
+    const roomPeople = {};
+    function drawRoom(r, t) {
+      shadow(() => rr(r.x, r.y, r.w, r.h, 14, C.room, C.roomEdge), 18, "rgba(0,0,0,.25)", 4);
+      rr(r.x + 10, r.y + r.h * 0.45, r.w - 20, r.h * 0.42, 10, C.rug);                       // ковёр
+      pill(r.x + 10, r.y + 14, r.label, r.color, "#1a1432", 10, 7, "left");
+      const cx = r.x + r.w * 0.5, cy = r.y + r.h * 0.62;
+      const dw = Math.min(r.w * 0.5, 64), dh = 20;
+      shadow(() => rr(cx - dw / 2, cy - dh / 2, dw, dh, 5, C.wood, C.woodDark), 8);          // стол
+      rr(cx - 6, cy - 5, 12, 9, 2, C.monitor); ctx.fillStyle = "rgba(124,216,255,.55)"; ctx.fillRect(cx - 5, cy - 4, 10, 6);
+      plant(r.x + r.w - 16, r.y + 30, 12, t);
+      rr(r.x + 8, r.y + r.h - 22, 30, 12, 6, C.sofa);                                       // диванчик
+      const who = { head: "Р", risk: "!", lab: "λ" }[r.key];
+      const col = { head: "#e8e2ff", risk: C.warn, lab: C.violet }[r.key];
+      const py = cy + dh / 2 + 12;
+      avatar(cx, py, 10, col, who, t, r.x / 50, false);
+      roomPeople[r.key] = { x: cx, y: py - 12 };
+      if (r.key === "lab") { for (let i = 0; i < Math.min(3, interns.length); i++) { const a = t / 3000 + i * 2.1; avatar(cx + Math.cos(a) * 24, py - 4 + Math.sin(a) * 8, 5, C.violet, "", t, i, false); } }
+    }
+    function drawDesk(d, t) {
+      const { a, x, y, w, h, kind } = d;
+      const inPos = a.exposure > 0, mini = kind === "intern";
+      const deskH = mini ? 16 : 22, deskY = y + (mini ? 14 : 20), deskW = w - 12, deskX = x + 6;
+      // рабочая ячейка
+      rr(x, y, w, h, 10, "rgba(255,255,255,.03)");
+      // кресло + сотрудник (сверху от стола)
+      const px = x + w / 2, py = deskY - (mini ? 8 : 11);
+      ctx.beginPath(); ctx.arc(px, py, mini ? 9 : 12, 0, Math.PI * 2); ctx.fillStyle = C.chair; ctx.fill();
+      avatar(px, py, mini ? 6.5 : 9, d.color, mini ? "" : initial(a.name), t, d.phase, inPos && !mini);
+      // стол
+      shadow(() => rr(deskX, deskY, deskW, deskH, 6, C.desk, C.deskEdge), 8, "rgba(0,0,0,.3)", 3);
+      // монитор с подсветкой
+      const mw = mini ? 14 : 20, mh = mini ? 9 : 12, mx = px - mw / 2, my = deskY + (deskH - mh) / 2;
+      const blink = 0.6 + 0.4 * Math.sin(t / 800 + d.phase * 2);
+      ctx.save(); ctx.shadowBlur = inPos ? 14 : 6; ctx.shadowColor = inPos ? C.glowBtc : C.glowIdle;
+      rr(mx, my, mw, mh, 2, inPos ? `rgba(247,147,26,${0.55 + 0.45 * blink})` : `rgba(124,216,255,${0.25 + 0.3 * blink})`); ctx.restore();
+      rr(mx - 1, my - 1, mw + 2, mh + 2, 2.5, null, C.monitor, 1.5);
+      // мелочи на столе: чашка, блокнот
+      if (!mini) { ctx.beginPath(); ctx.arc(deskX + 10, deskY + deskH / 2, 3, 0, Math.PI * 2); ctx.fillStyle = "#e8d8c0"; ctx.fill(); rr(deskX + deskW - 16, deskY + 5, 10, 12, 1.5, "#d8d2f0"); }
+      // подписи
+      const pnl = a.pnl_total, col = pnl > 0 ? C.up : pnl < 0 ? C.down : C.muted;
+      const name = short(a.name);
+      const ny = deskY + deskH + (mini ? 9 : 12);
+      text(name.length > (mini ? 10 : 13) ? name.slice(0, mini ? 9 : 12) + "…" : name, px, ny, mini ? 9 : 11, C.text, 600, "center", "middle");
+      if (!mini) text(money(pnl), px, ny + 14, 10, col, 600, "center", "middle");
+      else { ctx.beginPath(); ctx.arc(px + Math.min(w / 2 - 6, 26), ny, 2.5, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill(); }
+      if (a.status === "paused") pill(x + w - 16, y + 10, "⏸", "rgba(251,191,36,.25)", C.warn, 8, 3);
+      d.head = { x: px, y: py - (mini ? 8 : 12) };
+    }
+    function drawCourier(c, t) {
+      const k = clamp((t - c.t0) / c.dur, 0, 1), e = k < 0.5 ? 2 * k * k : -1 + (4 - 2 * k) * k;
+      const mx = (c.from.x + c.to.x) / 2, my = Math.min(c.from.y, c.to.y) - 40;
+      const x = (1 - e) * (1 - e) * c.from.x + 2 * (1 - e) * e * mx + e * e * c.to.x;
+      const y = (1 - e) * (1 - e) * c.from.y + 2 * (1 - e) * e * my + e * e * c.to.y;
+      ctx.setLineDash([3, 5]); ctx.beginPath(); ctx.moveTo(c.from.x, c.from.y); ctx.quadraticCurveTo(mx, my, c.to.x, c.to.y); ctx.strokeStyle = "rgba(247,147,26,.35)"; ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
+      shadow(() => rr(x - 7, y - 9, 14, 18, 2, "#fff8e8"), 6);
+      ctx.fillStyle = C.btc; ctx.fillRect(x - 4, y - 5, 8, 2); ctx.fillRect(x - 4, y - 1, 8, 2); ctx.fillRect(x - 4, y + 3, 5, 2);
+      pill(x, y - 16, c.label, C.btc, "#1a1432", 9, 5);
     }
 
-    // --- анимационные события ---
-    function scheduleBubbles(t) {
-      if (t < nextBubble) return;
-      nextBubble = t + 2600;
-      const r = rooms[Math.floor(Math.random() * rooms.length)];
-      if (Math.random() < 0.45) {
-        const p = people.find((q) => q.room === r);
-        bubbles.push({ p, text: roomSay[r.key](), until: t + 4200 });
-      } else if (team.length) {
-        const a = team[Math.floor(Math.random() * team.length)];
-        const s = slots.find((q) => q.a === a);
-        if (s && a.last_reason) bubbles.push({ p: s.p, text: a.last_reason, until: t + 4200 });
+    // ---------- события анимации ----------
+    function schedule(t) {
+      if (t >= nextBubble) {
+        nextBubble = t + 3000;
+        for (let i = bubbles.length - 1; i >= 0; i--) if (bubbles[i].until < t) bubbles.splice(i, 1);
+        if (Math.random() < 0.5) { const keys = ["head", "risk", "lab"]; const k = keys[Math.floor(Math.random() * 3)]; bubbles.push({ key: k, text: say[k](), t0: t, until: t + 4500 }); }
+        else if (team.length) { const d = desks.filter((q) => q.kind === "team")[Math.floor(Math.random() * team.length)]; if (d && d.a.last_reason) bubbles.push({ desk: d, text: d.a.last_reason, t0: t, until: t + 4500 }); }
+        if (bubbles.length > 2) bubbles.shift();
       }
-      for (let i = bubbles.length - 1; i >= 0; i--) if (bubbles[i].until < t) bubbles.splice(i, 1);
-      if (bubbles.length > 2) bubbles.shift();
-    }
-    function scheduleWalkers(t) {
-      if (t < nextWalker) return;
-      nextWalker = t + 5000;
-      const recent = slots.filter((s) => s.kind === "team" && s.a.last_trade_ts && now - s.a.last_trade_ts < 7200);
-      if (!recent.length) return;
-      const s = recent[Math.floor(Math.random() * recent.length)];
-      const risk = rooms[1];
-      walkers.push({ p: mkPerson("w" + s.a.name + t, s.p.gx, s.p.gy, { stand: true }), from: { gx: s.p.gx, gy: s.p.gy }, to: { gx: risk.gx + 1.5, gy: risk.gy + 3.6 }, t0: t, dur: 3200, label: s.a.last_action === "SELL" ? "продажа" : "покупка" });
+      if (t >= nextCourier) {
+        nextCourier = t + 6000;
+        const recent = desks.filter((q) => q.kind === "team" && q.a.last_trade_ts && now - q.a.last_trade_ts < 7200);
+        if (recent.length && roomPeople.risk) { const d = recent[Math.floor(Math.random() * recent.length)]; couriers.push({ from: { x: d.x + d.w / 2, y: d.y + 20 }, to: { x: roomPeople.risk.x, y: roomPeople.risk.y + 30 }, t0: t, dur: 3500, label: d.a.last_action === "SELL" ? "продажа" : "покупка" }); }
+        for (let i = couriers.length - 1; i >= 0; i--) if (t - couriers[i].t0 > couriers[i].dur + 600) couriers.splice(i, 1);
+      }
     }
 
-    // --- кадр ---
     function draw(t) {
       if (stopped) return;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
-      ctx.save(); ctx.beginPath(); ctx.rect(0, HUD, W, H - HUD); ctx.clip();
-      // пол
-      for (let gx = 0; gx < GW; gx++) for (let gy = 0; gy < GH; gy++) tile(gx, gy, (gx + gy) % 2 ? C.floorA : C.floorB, C.grid);
-      // задние стены
-      const wl = [P(-0.5, -0.5), P(GW - 0.5, -0.5)], wl2 = [P(-0.5, -0.5), P(-0.5, GH - 0.5)];
-      const wh = 60 * view.s;
-      ctx.fillStyle = C.wall; ctx.beginPath(); ctx.moveTo(wl[0].x, wl[0].y); ctx.lineTo(wl[1].x, wl[1].y); ctx.lineTo(wl[1].x, wl[1].y - wh); ctx.lineTo(wl[0].x, wl[0].y - wh); ctx.closePath(); ctx.fill(); ctx.strokeStyle = C.wallEdge; ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(wl2[0].x, wl2[0].y); ctx.lineTo(wl2[1].x, wl2[1].y); ctx.lineTo(wl2[1].x, wl2[1].y - wh); ctx.lineTo(wl2[0].x, wl2[0].y - wh); ctx.closePath(); ctx.fill(); ctx.stroke();
-      // объекты по глубине
-      const items = [];
-      rooms.forEach((r) => items.push({ d: r.gx + r.gy + r.w + r.h - 2, f: () => room(r, t) }));
-      slots.forEach((s) => { items.push({ d: s.p.gx + s.p.gy, f: () => { const h = person(s.p, t, s.kind === "team" ? 1 : 0.85); s.head = h; } }); items.push({ d: s.gx + s.gy + 0.01, f: () => desk(s, t) }); });
-      people.filter((p) => p.room).forEach((p) => items.push({ d: p.gx + p.gy, f: () => { p.head = person(p, t); } }));
-      walkers.forEach((w) => { const k = Math.min(1, (t - w.t0) / w.dur); const e = k < 0.5 ? 2 * k * k : -1 + (4 - 2 * k) * k; w.p.gx = w.from.gx + (w.to.gx - w.from.gx) * e; w.p.gy = w.from.gy + (w.to.gy - w.from.gy) * e; w.p.up = true; items.push({ d: w.p.gx + w.p.gy + 0.5, f: () => { const h = person(w.p, t); pill(h.x, h.y - 10, w.label, C.btc, "#1a1432", 9, 4); } }); });
-      items.sort((a, b) => a.d - b.d).forEach((i) => i.f());
-      for (let i = walkers.length - 1; i >= 0; i--) if (t - walkers[i].t0 > walkers[i].dur + 800) walkers.splice(i, 1);
-      // бирки поверх
-      slots.forEach(tags);
-      bubbles.forEach((b) => { if (b.p.head) bubble(b.p.head.x, b.p.head.y - 6, b.text, Math.min(200, W * 0.5)); });
-      ctx.restore();
-      hud(t);
-      scheduleBubbles(t); scheduleWalkers(t);
+      drawFloor(t);
+      drawHud(t);
+      L.rooms.forEach((r) => drawRoom(r, t));
+      text("КОМАНДА", L.teamLabel.x, L.teamLabel.y, 9, C.dim, 700);
+      rr(L.internZone.x, L.internZone.y, L.internZone.w, L.internZone.h, 12, "rgba(169,156,255,.05)", "rgba(169,156,255,.18)");
+      text(`СТАЖЁРЫ · ${interns.length}`, L.internLabel.x, L.internLabel.y, 9, C.dim, 700);
+      desks.forEach((d) => drawDesk(d, t));
+      couriers.forEach((c) => drawCourier(c, t));
+      bubbles.forEach((b) => {
+        const life = (t - b.t0) / (b.until - b.t0), alpha = life < 0.1 ? life / 0.1 : life > 0.85 ? (1 - life) / 0.15 : 1;
+        const p = b.desk ? b.desk.head : roomPeople[b.key];
+        if (p) bubble(p.x, p.y - 4, b.text, Math.min(220, W * 0.6), clamp(alpha, 0, 1));
+      });
+      schedule(t);
       raf = requestAnimationFrame(draw);
     }
 
-    // --- управление: перетаскивание, зум, клик ---
-    let drag = null, pinch = null, moved = false;
-    const toLocal = (ev) => { const b = canvas.getBoundingClientRect(); const src = ev.touches ? ev.touches[0] : ev; return { x: src.clientX - b.left, y: src.clientY - b.top }; };
-    const zoomAt = (px, py, k) => { const ns = clamp(view.s * k, 0.35, 4); view.x = px - (px - view.x) * (ns / view.s); view.y = py - (py - view.y) * (ns / view.s); view.s = ns; };
-    canvas.addEventListener("pointerdown", (ev) => { drag = { x: ev.clientX, y: ev.clientY, vx: view.x, vy: view.y }; moved = false; canvas.setPointerCapture(ev.pointerId); });
-    canvas.addEventListener("pointermove", (ev) => { if (!drag || pinch) return; const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y; if (Math.hypot(dx, dy) > 4) moved = true; view.x = drag.vx + dx; view.y = drag.vy + dy; });
-    canvas.addEventListener("pointerup", (ev) => {
-      if (drag && !moved) { const l = toLocal(ev); const hit = slots.find((s) => s.head && Math.hypot(s.head.x - l.x, s.head.y + 14 - l.y) < 22); if (hit && onAgentClick) onAgentClick(hit.a.name); }
-      drag = null;
-    });
-    canvas.addEventListener("pointercancel", () => (drag = null));
-    canvas.addEventListener("wheel", (ev) => { ev.preventDefault(); const l = toLocal(ev); zoomAt(l.x, l.y, ev.deltaY < 0 ? 1.12 : 0.9); }, { passive: false });
-    canvas.addEventListener("touchstart", (ev) => { if (ev.touches.length === 2) { pinch = { d: Math.hypot(ev.touches[0].clientX - ev.touches[1].clientX, ev.touches[0].clientY - ev.touches[1].clientY) }; } }, { passive: true });
-    canvas.addEventListener("touchmove", (ev) => { if (ev.touches.length === 2 && pinch) { ev.preventDefault(); const d = Math.hypot(ev.touches[0].clientX - ev.touches[1].clientX, ev.touches[0].clientY - ev.touches[1].clientY); const b = canvas.getBoundingClientRect(); zoomAt((ev.touches[0].clientX + ev.touches[1].clientX) / 2 - b.left, (ev.touches[0].clientY + ev.touches[1].clientY) / 2 - b.top, d / pinch.d); pinch.d = d; } }, { passive: false });
-    canvas.addEventListener("touchend", () => (pinch = null));
-    canvas.addEventListener("dblclick", fit);
-    canvas.style.touchAction = "none";
-
+    canvas.onclick = (ev) => {
+      const b = canvas.getBoundingClientRect(); const x = ev.clientX - b.left, y = ev.clientY - b.top;
+      const hit = desks.find((d) => x >= d.x && x <= d.x + d.w && y >= d.y && y <= d.y + d.h);
+      if (hit && onAgentClick) onAgentClick(hit.a.name);
+    };
+    canvas.style.touchAction = "";
     layout();
     raf = requestAnimationFrame(draw);
-    return { stop() { stopped = true; cancelAnimationFrame(raf); }, fit, layout };
+    return { stop() { stopped = true; cancelAnimationFrame(raf); }, layout, fit: layout };
   };
 })();
