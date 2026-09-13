@@ -61,6 +61,13 @@ CREATE TABLE IF NOT EXISTS lessons (
     ts INTEGER NOT NULL, agent TEXT NOT NULL, lesson TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS views (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL, analyst TEXT NOT NULL, regime TEXT NOT NULL, confidence REAL NOT NULL,
+    summary TEXT NOT NULL, price REAL NOT NULL, horizon_h INTEGER NOT NULL DEFAULT 24,
+    outcome_pct REAL, hit INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_views_analyst_ts ON views(analyst, ts);
 """
 
 
@@ -83,7 +90,7 @@ class Journal:
                          ("alert_below", "REAL NOT NULL DEFAULT 0"), ("stop_price", "REAL NOT NULL DEFAULT 0"),
                          ("week_start_equity", "REAL NOT NULL DEFAULT 0"), ("week_key", "TEXT NOT NULL DEFAULT ''"),
                          ("streak_weeks", "INTEGER NOT NULL DEFAULT 0"), ("trial_weeks", "INTEGER NOT NULL DEFAULT 0"),
-                         ("live_ready", "INTEGER NOT NULL DEFAULT 0")):
+                         ("live_ready", "INTEGER NOT NULL DEFAULT 0"), ("rank", "INTEGER NOT NULL DEFAULT 1")):
             if col not in cols:
                 self._conn.execute(f"ALTER TABLE agents ADD COLUMN {col} {ddl}")
         tcols = {r[1] for r in self._conn.execute("PRAGMA table_info(trades)").fetchall()}
@@ -206,6 +213,49 @@ class Journal:
     def recent_events(self, limit: int = 100) -> list[dict]:
         return self._rows("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,))
 
+    def event_counts(self, since_ts: int) -> dict[str, int]:
+        """Сколько событий каждого вида с момента since_ts (для KPI отделов)."""
+        rows = self._rows("SELECT kind, COUNT(*) AS n FROM events WHERE ts>=? GROUP BY kind", (since_ts,))
+        return {r["kind"]: int(r["n"]) for r in rows}
+
+    def events_of(self, kinds: tuple[str, ...], limit: int = 50) -> list[dict]:
+        marks = ",".join("?" * len(kinds))
+        return self._rows(f"SELECT * FROM events WHERE kind IN ({marks}) ORDER BY id DESC LIMIT ?", (*kinds, limit))
+
+    # --- аналитический отдел ---
+    def add_view(self, ts: int, analyst: str, regime: str, confidence: float, summary: str, price: float, horizon_h: int = 24) -> int:
+        cur = self._exec("INSERT INTO views(ts,analyst,regime,confidence,summary,price,horizon_h) VALUES(?,?,?,?,?,?,?)",
+                         (ts, analyst, regime, confidence, summary, price, horizon_h))
+        return cur.lastrowid
+
+    def latest_views(self) -> list[dict]:
+        """Последний взгляд каждого аналитика."""
+        return self._rows("SELECT v.* FROM views v JOIN (SELECT analyst, MAX(id) AS id FROM views GROUP BY analyst) m ON v.id=m.id ORDER BY v.analyst")
+
+    def recent_views(self, analyst: str | None = None, limit: int = 30) -> list[dict]:
+        if analyst:
+            return self._rows("SELECT * FROM views WHERE analyst=? ORDER BY id DESC LIMIT ?", (analyst, limit))
+        return self._rows("SELECT * FROM views ORDER BY id DESC LIMIT ?", (limit,))
+
+    def score_views(self, price_now: float, ts_now: int, flat_band_pct: float = 0.5) -> int:
+        """Проставить результат взглядам, чей горизонт наступил: попал ли аналитик в направление."""
+        rows = self._rows("SELECT id, regime, price, horizon_h FROM views WHERE outcome_pct IS NULL AND ts + horizon_h*3600 <= ?", (ts_now,))
+        for r in rows:
+            pct = (price_now / r["price"] - 1) * 100 if r["price"] else 0.0
+            hit = (r["regime"] == "up" and pct > flat_band_pct / 2) or (r["regime"] == "down" and pct < -flat_band_pct / 2) \
+                or (r["regime"] == "flat" and abs(pct) <= flat_band_pct)
+            self._exec("UPDATE views SET outcome_pct=?, hit=? WHERE id=?", (pct, int(hit), r["id"]))
+        return len(rows)
+
+    def analyst_stats(self) -> dict[str, dict]:
+        rows = self._rows("SELECT analyst, COUNT(*) AS n, SUM(CASE WHEN outcome_pct IS NOT NULL THEN 1 ELSE 0 END) AS scored, "
+                          "SUM(COALESCE(hit,0)) AS hits FROM views GROUP BY analyst")
+        return {r["analyst"]: {"views": int(r["n"]), "scored": int(r["scored"] or 0), "hits": int(r["hits"] or 0),
+                               "accuracy": (int(r["hits"] or 0) / int(r["scored"])) if r["scored"] else None} for r in rows}
+
+    def analyst_mistakes(self, analyst: str, limit: int = 6) -> list[dict]:
+        return self._rows("SELECT * FROM views WHERE analyst=? AND hit=0 ORDER BY id DESC LIMIT ?", (analyst, limit))
+
     def equity_at(self, agent: str, ts: int) -> float | None:
         """Последнее известное значение капитала агента на момент ts (или None)."""
         rows = self._rows("SELECT equity FROM equity WHERE agent=? AND ts<=? ORDER BY ts DESC LIMIT 1", (agent, ts))
@@ -273,8 +323,8 @@ class Journal:
         self._exec(
             "INSERT INTO agents(name,strategy,params,status,hired_at,cash,btc,peak_equity,day_start_equity,day_key,"
             "start_balance,realized_pnl,avg_entry,notes,last_decided_ts,slot_minute,next_check_ts,alert_above,alert_below,stop_price,"
-            "week_start_equity,week_key,streak_weeks,trial_weeks,live_ready)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "week_start_equity,week_key,streak_weeks,trial_weeks,live_ready,rank)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(name) DO UPDATE SET strategy=excluded.strategy, params=excluded.params, status=excluded.status,"
             " hired_at=excluded.hired_at, cash=excluded.cash, btc=excluded.btc, peak_equity=excluded.peak_equity,"
             " day_start_equity=excluded.day_start_equity, day_key=excluded.day_key, start_balance=excluded.start_balance,"
@@ -282,21 +332,21 @@ class Journal:
             " last_decided_ts=excluded.last_decided_ts, slot_minute=excluded.slot_minute, next_check_ts=excluded.next_check_ts,"
             " alert_above=excluded.alert_above, alert_below=excluded.alert_below, stop_price=excluded.stop_price,"
             " week_start_equity=excluded.week_start_equity, week_key=excluded.week_key, streak_weeks=excluded.streak_weeks,"
-            " trial_weeks=excluded.trial_weeks, live_ready=excluded.live_ready",
+            " trial_weeks=excluded.trial_weeks, live_ready=excluded.live_ready, rank=excluded.rank",
             (a.name, a.strategy.family, json.dumps(a.strategy.params), a.status, a.hired_at, a.account.cash,
              a.account.btc, a.peak_equity, a.day_start_equity, a.day_key, a.start_balance(),
              a.account.realized_pnl, a.account._avg_entry, json.dumps(a.notes, ensure_ascii=False),
              a.last_decided_ts, a.slot_minute, a.next_check_ts, a.alert_above, a.alert_below, a.stop_price,
-             a.week_start_equity, a.week_key, a.streak_weeks, a.trial_weeks, int(a.live_ready)))
+             a.week_start_equity, a.week_key, a.streak_weeks, a.trial_weeks, int(a.live_ready), int(a.rank)))
 
     def mark_fired(self, name: str, ts: int) -> None:
         self._exec("UPDATE agents SET status='fired', fired_at=? WHERE name=?", (ts, name))
 
     def load_agents(self) -> list[dict]:
-        return self._rows("SELECT * FROM agents WHERE status NOT IN ('fired', 'dropped')")
+        return self._rows("SELECT * FROM agents WHERE status NOT IN ('fired', 'dropped', 'moved')")
 
     def set_status(self, name: str, status: str, ts: int | None = None) -> None:
-        if status in {"fired", "dropped"}:
+        if status in {"fired", "dropped", "moved"}:
             self._exec("UPDATE agents SET status=?, fired_at=? WHERE name=?", (status, ts or int(time.time()), name))
         else:
             self._exec("UPDATE agents SET status=? WHERE name=?", (status, name))
@@ -318,6 +368,9 @@ class Journal:
             r["params"] = json.loads(r["params"])
             r["stats"] = json.loads(r["stats"])
         return rows
+
+    def mark_bench_used(self, bench_id: int) -> None:
+        self._exec("UPDATE bench SET used=1 WHERE id=?", (bench_id,))
 
     def take_from_bench(self, exclude: set[str] | None = None) -> dict | None:
         """Взять лучшего кандидата. exclude — множество ключей "семейство|params", уже занятых."""

@@ -1,9 +1,10 @@
-"""Движок: один «тик» = одна закрытая часовая свеча.
+"""Движок компании Botz: один проход планировщика раз в минуту.
 
 Порядок на каждом тике:
-1. взять свечи → 2. обновить день/пики → 3. проверка лимитов отдела →
-4. каждый агент решает → риск-менеджер проверяет → бумажный счёт исполняет → журнал →
-5. обучение → 6. руководитель (найм, отчёт) → 7. сохранить состояние.
+1. взять свечи и живую цену → 2. обновить день/неделю/пики → 3. проверка лимитов компании →
+4. аналитический отдел (если подошло время) → директор распределяет капитал по дескам →
+5. стопы и ликвидации → 6. трейдеры и стажёры, у кого подошло время, решают → риск-менеджер →
+   демосчёт исполняет → журнал → 7. обучение → 8. директор (разбор, найм, ротация) → 9. сохранить.
 """
 from __future__ import annotations
 
@@ -13,14 +14,16 @@ import time
 from datetime import datetime, timezone
 
 from .agents.base import Agent
-from .agents.registry import DEFAULT_NAMES, build_strategy, default_department, new_account
+from .agents.registry import (DESKS, RANK_INTERN, RANK_TRADER, DEFAULT_NAMES, build_strategy, default_department, default_families,
+                              desk_of, family_label, family_side, new_account)
+from .analytics import AnalyticsDept
 from .data import indicators as ind
 from .config import Settings
 from .data.market import MarketData, get_market
 from .journal import Journal
 from .learning import Learner
 from .llm import ClaudeClient
-from .manager import DepartmentHead, is_intern, is_team
+from .manager import Director, is_intern, is_team
 from .models import Candle, Trade
 from .paper import PaperAccount
 from .risk import RiskManager
@@ -43,7 +46,9 @@ class Engine:
         if self.client and self.client.spend_store is None:
             self.client.spend_store = self.j
         self.risk = RiskManager(settings)
-        self.head = DepartmentHead(settings, self.j, self.client)
+        self.director = Director(settings, self.j, self.client)
+        self.head = self.director          # старое имя, используется в тестах и cli
+        self.analytics = AnalyticsDept(settings, self.j, self.client)
         self.learner = Learner(settings, self.j, self.client)
         self.agents: list[Agent] = []
         self.last_candles: list[Candle] = []
@@ -63,9 +68,14 @@ class Engine:
             self.agents = default_department(self.s, self.client)
             for a in self.agents:
                 self.j.save_agent(a)
-            self.j.event("start", f"Создан отдел из {len(self.agents)} агентов")
+            self.j.event("start", f"Компания Botz создана: три деска, {len(self.agents)} трейдеров")
             return
         for r in rows:
+            if r["strategy"].startswith("llm_") or r["strategy"] in {"llm_regime_both"}:
+                # нейро-агенты больше не торгуют: они стали аналитическим отделом
+                self.j.set_status(r["name"], "moved", int(time.time()))
+                self.j.event("analytics", f"{r['name']} переведён из трейдеров в аналитический отдел: нейросеть теперь советует директору, а не торгует", r["name"])
+                continue
             strat = build_strategy(r["strategy"], json.loads(r["params"]), self.client)
             acc = PaperAccount(owner=r["name"], cash=r["cash"], btc=r["btc"], fee_rate=self.s.fee_rate,
                                slippage_rate=self.s.slippage_rate, allow_short=strat.side != "long")
@@ -82,24 +92,29 @@ class Engine:
                       alert_above=float(r.get("alert_above") or 0), alert_below=float(r.get("alert_below") or 0),
                       stop_price=float(r.get("stop_price") or 0), week_start_equity=float(r.get("week_start_equity") or 0),
                       week_key=r.get("week_key") or "", streak_weeks=int(r.get("streak_weeks") or 0),
-                      trial_weeks=int(r.get("trial_weeks") or 0), live_ready=bool(r.get("live_ready") or 0))
+                      trial_weeks=int(r.get("trial_weeks") or 0), live_ready=bool(r.get("live_ready") or 0),
+                      rank=int(r.get("rank") if r.get("rank") is not None else (RANK_INTERN if r["status"] == "intern" else RANK_TRADER)))
             a._start_balance = r["start_balance"]
             a.last_price = self.last_price
             self.agents.append(a)
         self._ensure_defaults()
 
     def _ensure_defaults(self) -> None:
-        """Если в коде появился новый штатный агент, добавить его в уже работающий отдел."""
+        """Если на деске есть свободные места, а в коде появились новые штатные агенты, добавить их.
+        Если деск переполнен (после перестройки компании), лишние худшие уходят в стажёры."""
         known = {r["strategy"] for r in self.j.all_agents()}
-        for family, name in DEFAULT_NAMES.items():
-            if family in known:
+        for family, name in default_families(self.s):
+            desk = desk_of(family_side(family))
+            if family in known or len(self.director.desk_members(self.agents, desk)) >= self.director.desk_size:
                 continue
             strat = build_strategy(family, None, self.client)
             a = Agent(name=name, strategy=strat, account=new_account(self.s, name, allow_short=strat.side != "long"))
             a.last_price = self.last_price
             self.agents.append(a)
             self.j.save_agent(a)
-            self.j.event("hire", f"В отдел добавлен новый штатный агент: {name}", name)
+            self.j.event("hire", f"В деск «{DESKS[desk]['label']}» добавлен новый штатный трейдер: {name}", name)
+        if self.last_price:
+            self.director.trim_desks(self.agents, self.last_price, int(time.time()))
 
     def save(self) -> None:
         for a in self.agents:
@@ -264,7 +279,7 @@ class Engine:
         summary = {"ok": True, "ts": last.ts, "price": price, "new_candle": new_candle, "decisions": [], "fired": [], "hired": []}
 
         alive = [a for a in self.agents if a.status not in {"fired", "dropped"}]
-        wk = self.head.week_key(now_i)
+        wk = self.director.week_key(now_i)
         new_week = self.j.kv_get("week_key") != wk
         for a in alive:
             a.last_ts_seen = now_i
@@ -274,7 +289,7 @@ class Engine:
             a.observe(price)
         if new_week:
             if self.j.kv_get("week_key"):        # не при самом первом запуске
-                summary["weekly"] = self.head.weekly_review(self.agents, price, now_i, candles)
+                summary["weekly"] = self.director.weekly_review(self.agents, price, now_i, candles)
             self.j.kv_set("week_key", wk)
             for a in self.agents:
                 if a.status not in {"fired", "dropped"}:
@@ -294,15 +309,21 @@ class Engine:
                         halted_now = True
                     self.j.equity(now_i, a.name, a.equity(price), price)
             if halted_now:
-                self.j.event("halt", f"Отдел остановлен: {why}", None, ts=now_i)
+                self.j.event("halt", f"Компания остановлена: {why}", None, ts=now_i)
             summary["halt"] = why
 
-        if self.j.kv_get("head_day") != dk:
+        new_views = []
+        try:
+            new_views = self.analytics.run_due(candles, price, now_i)
+        except Exception as e:  # noqa: BLE001
+            log.exception("аналитический отдел: %s", e)
+        if new_views:
+            summary["views"] = new_views
+        if self.j.kv_get("head_day") != dk or new_views:
             self.j.kv_set("head_day", dk)
-            self.head.daily_policy(candles, now_i)
-        pol = self.head.policy()
-        self.risk.policy_cap = float(pol.get("cap", 1.0))
-        self.risk.policy_cap_short = float(pol.get("cap_short", pol.get("cap", 1.0)))
+            self.director.daily_policy(candles, now_i, self.analytics.consensus(now_i))
+        pol = self.director.policy()
+        self.risk.desk_caps = {k: float(v) for k, v in (pol.get("caps") or {}).items()} or {"bulls": 1.0, "bears": 1.0, "both": 1.0}
         for a in alive:
             a.account.min_rebalance_frac = float(pol.get("min_rebalance", 0.05))
         atr_pct = self._atr_pct(candles)
@@ -328,9 +349,9 @@ class Engine:
         if new_candle:
             self._apply_funding(alive, price, last.ts)
             self.learner.after_tick(self.agents, candles)
-            self.head.review(self.agents, price, now_i)     # ежедневный разбор до найма: освободившиеся места займут сразу
-        hired = self.head.hire_if_needed(self.agents, candles, now_i)
-        new_interns = self.head.fill_interns(self.agents, candles, now_i)
+            self.director.review(self.agents, price, now_i)     # ежедневный разбор до найма: освободившиеся места займут сразу
+        hired = self.director.hire_if_needed(self.agents, candles, now_i)
+        new_interns = self.director.fill_interns(self.agents, candles, now_i)
         for h in hired + new_interns:
             h.last_ts_seen = now_i
             h.roll_day(dk, price)
@@ -363,7 +384,7 @@ class Engine:
             sig = hold(f"ошибка стратегии: {e}", ctx["exposure"])
         a.last_signal = sig
         if a.drawdown(price) >= self.s.agent_max_drawdown:
-            self.head.drop_intern(a, price, ts, f"просадка {a.drawdown(price)*100:.1f}%")
+            self.director.drop_intern(a, price, ts, f"просадка {a.drawdown(price)*100:.1f}%")
             return
         exp_before = a.account.exposure(price)
         desired = sig.target_exposure if a.account.allow_short else max(0.0, sig.target_exposure)
@@ -400,7 +421,7 @@ class Engine:
         trade = None
         exp_before = a.account.exposure(price)
         if verdict.fire:
-            self.head.fire(a, price, ts, verdict.reason)
+            self.director.fire(a, price, ts, verdict.reason)
             blocked = verdict.reason
         elif verdict.pause:
             t = a.account.flatten(price, ts, f"пауза: {verdict.reason}")
@@ -440,7 +461,6 @@ class Engine:
     def state(self) -> dict:
         price = self.last_price
         now_i = int(time.time())
-        step = self._step_seconds()
 
         def enrich(a: Agent) -> dict:
             d = a.snapshot(price).__dict__
@@ -460,8 +480,28 @@ class Engine:
         total = sum(s["equity"] for s in alive)
         start = sum(a.start_balance() for a in self.agents if is_team(a))
         upcoming = sorted(({"name": d["name"], "ts": d["next_decision_ts"]} for d in snaps if d["next_decision_ts"]), key=lambda x: x["ts"])
+        pol = self.director.policy()
+        desks = []
+        for key, meta in DESKS.items():
+            members = [s for s in alive if s["desk"] == key]
+            d_start = sum(a.start_balance() for a in self.agents if is_team(a) and a.desk == key)
+            desks.append({
+                "key": key, "label": meta["label"], "side": meta["side"], "description": meta["description"],
+                "size": self.director.desk_size, "agents": len(members),
+                "equity": round(sum(s["equity"] for s in members), 2), "start": round(d_start, 2),
+                "pnl": round(sum(s["equity"] for s in members) - d_start, 2),
+                "pnl_day": round(sum(s["pnl_day"] for s in members), 2),
+                "pnl_24h": round(sum(s["pnl_24h"] for s in members), 2),
+                "pnl_week": round(sum(s["pnl_week"] for s in members), 2),
+                "cap": float((pol.get("caps") or {}).get(key, 1.0)),
+                "in_position": len([s for s in members if abs(s["exposure"]) > 1e-9]),
+                "interns": len([i for i in interns if i["desk"] == key]),
+            })
+        week_ago = now_i - 7 * 86400
+        ev7 = self.j.event_counts(week_ago)
         return {
             "now": now_i,
+            "company": "Botz",
             "last_tick_ts": self.last_tick_ts,
             "candle_close_ts": (self.last_tick_ts + self._step_seconds()) if self.last_tick_ts else 0,
             "upcoming": upcoming[:6],
@@ -479,9 +519,11 @@ class Engine:
                            "agents_active": len([s for s in alive if s["status"] == "active"]),
                            "agents_paused": len([s for s in alive if s["status"] == "paused"]),
                            "halted": self.risk.dept_halted_day == day_key_of(self.last_tick_ts) if self.last_tick_ts else False},
+            "desks": desks,
             "agents": snaps,
             "interns": interns,
-            "team_size": self.s.team_size,
+            "team_size": self.director.team_size,
+            "desk_size": self.director.desk_size,
             "intern_count": self.s.intern_count,
             "bench": self.j.bench()[:10],
             "approvals": self.j.pending_approvals(),
@@ -491,8 +533,29 @@ class Engine:
             "last_poll_ts": self.last_poll_ts,
             "max_exposure": self.s.agent_max_exposure,
             "risk_per_trade": self.s.risk_per_trade,
-            "head": self.head.policy(),
+            "head": pol,
+            "analysts": self.analytics.stats(),
+            "consensus": self.analytics.consensus(now_i),
             "funding_rate": self.j.kv_get("funding_rate", None),
+            "risk": {
+                "limits": {"agent_daily_loss": self.s.agent_daily_loss_limit, "agent_max_drawdown": self.s.agent_max_drawdown,
+                           "dept_daily_loss": self.s.dept_daily_loss_limit, "stop_atr_mult": self.s.stop_atr_mult,
+                           "liquidation_ratio": self.s.liquidation_ratio, "max_exposure": self.s.agent_max_exposure},
+                "week": {"stops": ev7.get("stop", 0), "liquidations": ev7.get("liquidation", 0), "pauses": ev7.get("pause", 0),
+                         "fires": ev7.get("fire", 0), "halts": ev7.get("halt", 0)},
+                "max_drawdown": round(max([s["drawdown"] for s in alive], default=0.0), 4),
+                "in_position": len([s for s in alive if abs(s["exposure"]) > 1e-9]),
+            },
+            "science": {
+                "families": len(self.director.lab.families_count()),
+                "bench": len(self.j.bench()),
+                "week": {"interns": ev7.get("intern", 0), "promoted": ev7.get("hire", 0), "dropped": ev7.get("drop", 0),
+                         "research": ev7.get("research", 0)},
+            },
+            "learning": {
+                "week": {"lessons": ev7.get("lesson", 0), "retunes": ev7.get("retune", 0)},
+                "events": self.j.events_of(("lesson", "retune"), 12),
+            },
         }
 
     def _trades_24h(self, now_i: int) -> list[dict]:
@@ -518,26 +581,29 @@ class Engine:
             name = r["details"].get("agent")
             for a in self.agents:
                 if a.name == name and a.status != "fired":
-                    self.head.fire(a, price or a.last_price, ts, "решение владельца")
+                    self.director.fire(a, price or a.last_price, ts, "решение владельца")
         elif r["kind"] == "hire":
-            best = self.head.best_intern(self.agents, price)
+            desk = r["details"].get("desk")
+            best = self.director.best_intern(self.agents, price, desk=desk) or self.director.best_intern(self.agents, price)
             if best is not None:
-                self.head.promote(best, price, ts, "одобрено владельцем")
+                self.director.promote(best, price, ts, "одобрено владельцем")
             else:
-                cand = self.j.take_from_bench(self.head._taken(self.agents))
+                cand = self.director._take_candidate(self.agents, desk)
                 if cand:
-                    a = self.head._create(cand["strategy"], cand["params"], self.agents, ts, "active")
+                    a = self.director._create(cand["strategy"], cand["params"], self.agents, ts, "active")
                     self.j.event("hire", f"Нанят {a.name}", a.name, ts=ts)
                     self.agents.append(a)
         elif r["kind"] == "live":
-            self.j.event("approval", f"Одобрен перевод на реальный счёт: {r['details'].get('agent')} (модуль реальной торговли ещё не подключён)")
+            for a in self.agents:
+                if a.name == r["details"].get("agent") and is_team(a):
+                    self.director.approve_live(a, ts)
         elif r["kind"] == "promote":
             worst = next((a for a in self.agents if a.name == r["details"].get("agent") and is_team(a)), None)
             intern = next((a for a in self.agents if a.name == r["details"].get("intern") and is_intern(a)), None)
             if worst is not None:
-                self.head.fire(worst, price or worst.last_price, ts, "заменён стажёром по решению владельца")
+                self.director.fire(worst, price or worst.last_price, ts, "заменён стажёром по решению владельца")
             if intern is not None:
-                self.head.promote(intern, price or intern.last_price, ts, "одобрено владельцем")
+                self.director.promote(intern, price or intern.last_price, ts, "одобрено владельцем")
         self.j.event("approval", f"Одобрено: {r['title']}")
         self.save()
         return r
@@ -546,11 +612,11 @@ class Engine:
         price = self.last_price
         for a in self.agents:
             if a.name == name and is_intern(a):
-                self.head.drop_intern(a, price or a.last_price, int(time.time()), "решение владельца")
+                self.director.drop_intern(a, price or a.last_price, int(time.time()), "решение владельца")
                 self.save()
                 return True
             if a.name == name and is_team(a):
-                self.head.fire(a, price or a.last_price, int(time.time()), "решение владельца")
+                self.director.fire(a, price or a.last_price, int(time.time()), "решение владельца")
                 self.save()
                 return True
         return False

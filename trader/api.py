@@ -32,7 +32,7 @@ def create_app(engine: Engine | None = None, start_scheduler: bool = True) -> Fa
         yield
         scheduler.stop()
 
-    app = FastAPI(title="Отдел BTC-агентов", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Botz", version="0.2.0", lifespan=lifespan)
     app.state.engine = engine
     app.state.scheduler = scheduler
 
@@ -95,8 +95,8 @@ def create_app(engine: Engine | None = None, start_scheduler: bool = True) -> Fa
     def families():
         from .agents.registry import STRATEGY_FAMILIES, SIDED_FAMILIES, family_label, build_strategy
         out = [{"family": f, "label": family_label(f), "description": cls.description,
-                "llm": cls.family.startswith("llm_"), "params": cls.default_params(), "side": "long"}
-               for f, cls in STRATEGY_FAMILIES.items()]
+                "llm": False, "params": cls.default_params(), "side": "long"}
+               for f, cls in STRATEGY_FAMILIES.items() if not f.startswith("llm_")]
         for f in SIDED_FAMILIES:
             st = build_strategy(f)
             out.append({"family": f, "label": family_label(f), "description": st.description, "llm": False,
@@ -125,6 +125,11 @@ def create_app(engine: Engine | None = None, start_scheduler: bool = True) -> Fa
         if not engine.manual_fire(name):
             raise HTTPException(404, "агент не найден")
         return {"ok": True}
+
+    @app.get("/api/analytics")
+    def analytics():
+        return {"analysts": engine.analytics.stats(), "views": engine.j.recent_views(None, 40),
+                "consensus": engine.analytics.consensus(int(__import__("time").time()))}
 
     @app.post("/api/research")
     def research():

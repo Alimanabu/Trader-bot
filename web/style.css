@@ -1,7 +1,7 @@
 :root {
   --bg: #0b0d12; --card: #141821; --card2: #1c2130; --line: #232a3a;
   --text: #eef1f7; --muted: #8a93a8; --dim: #5d6579;
-  --up: #34d27b; --down: #ff6b6b; --warn: #ffb547; --btc: #f7931a; --usdt: #4f8cff; --violet: #9085e9;
+  --up: #34d27b; --down: #ff6b6b; --warn: #ffb547; --btc: #f7931a; --usdt: #4f8cff; --violet: #9085e9; --teal: #7cd8ff; --gold: #f2c94c;
   --tabbar: 64px;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -116,8 +116,6 @@ button.btn.danger { color: var(--down); border-color: var(--down); }
 .modal.open { display: flex; }
 .modal .box { background: var(--card); border: 1px solid var(--line); border-radius: 18px 18px 0 0; width: 100%; max-width: 760px; max-height: 88vh; overflow: auto; padding: 16px; }
 @media (min-width: 700px) { .modal { align-items: center; } .modal .box { border-radius: 18px; } body { padding-bottom: 20px; display: flex; flex-direction: column; } .top { order: 0; } main { order: 1; } .tabs { position: sticky; bottom: auto; top: 0; order: -1; border-top: 0; border-bottom: 1px solid var(--line); height: 52px; margin: 0 -14px; } .tabs button { flex-direction: row; gap: 6px; font-size: 13px; } .tabs button .ico { font-size: 16px; } }
-.fade { animation: fade .25s ease; }
-@keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 /* раскрывающиеся строки */
 .list { padding: 6px 10px; }
@@ -135,7 +133,7 @@ details.acc summary::-webkit-details-marker { display: none; }
 .acc-pnl small { font-size: 10px; font-weight: 400; color: var(--dim); }
 .acc-arrow { color: var(--dim); font-size: 18px; text-align: right; transition: transform .2s; }
 details.acc[open] .acc-arrow { transform: rotate(90deg); }
-.acc-body { padding: 4px 4px 14px; animation: fade .2s ease; }
+.acc-body { padding: 4px 4px 14px; }
 .kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 14px; margin-top: 8px; font-size: 13px; }
 .kv div { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px dashed var(--line); padding: 3px 0; }
 .kv span { color: var(--muted); }
@@ -146,6 +144,7 @@ details.acc[open] .acc-arrow { transform: rotate(90deg); }
 .feed time { color: var(--muted); font-size: 12px; padding-top: 2px; }
 .feed b { display: inline; }
 .feed .tag { margin-left: 6px; }
+.feed li > .tag { grid-column: 2; margin-left: 0; width: fit-content; }
 .feed .muted { grid-column: 2; font-size: 12px; }
 .tag.buy { color: var(--up); } .tag.sell { color: var(--down); }
 @media (max-width: 420px) { .acc-head, details.acc summary { grid-template-columns: 1fr 38px 74px 82px 12px; gap: 4px; } .acc-name b { font-size: 13px; } .acc-pnl { font-size: 12px; } }
@@ -155,8 +154,9 @@ details.acc[open] .acc-arrow { transform: rotate(90deg); }
 
 .warn { color: var(--warn); }
 
-/* котики и лог сделок */
-.cat { flex: none; border-radius: 50%; background: var(--card2); }
+/* аватары и лог сделок */
+.ava { flex: none; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; letter-spacing: .02em; color: #0b0d12; }
+.ava.d-bulls { background: var(--up); } .ava.d-bears { background: var(--down); } .ava.d-both { background: var(--teal); }
 .acc-name { flex-direction: row; align-items: center; gap: 10px; }
 .acc-name > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .cardhead { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -200,3 +200,46 @@ details.acc[open] .acc-arrow { transform: rotate(90deg); }
 .pill.both { background: rgba(124,216,255,.15); color: #7cd8ff; font-weight: 500; }
 
 .kind.liquidation { color: var(--down); } .kind.funding { color: var(--muted); }
+
+/* дески */
+.desks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+.desk { margin-top: 0; padding: 10px; border-top: 3px solid var(--line); cursor: pointer; }
+.desk.d-bulls { border-top-color: var(--up); } .desk.d-bears { border-top-color: var(--down); } .desk.d-both { border-top-color: var(--teal); }
+.desk .dhead { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; font-size: 13px; }
+.desk .dval { font-size: 20px; font-weight: 700; margin-top: 4px; }
+.desk .dval small { font-size: 12px; color: var(--muted); font-weight: 500; }
+.desk .drow { display: flex; justify-content: space-between; font-size: 12px; margin-top: 2px; }
+.capbar { height: 5px; background: var(--card2); border-radius: 3px; overflow: hidden; margin-top: 8px; }
+.capbar > i { display: block; height: 100%; background: var(--btc); }
+.capbar.d-bulls > i { background: var(--up); } .capbar.d-bears > i { background: var(--down); } .capbar.d-both > i { background: var(--teal); }
+.desk .note { margin-top: 4px; font-size: 11px; }
+@media (max-width: 420px) { .desks { grid-template-columns: 1fr; } .desk { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; align-items: center; } .desk .dhead { grid-column: 1 / -1; } .desk .capbar, .desk .note { grid-column: 1 / -1; } }
+.desk-list { border-top: 3px solid var(--line); }
+.desk-list.d-bulls { border-top-color: var(--up); } .desk-list.d-bears { border-top-color: var(--down); } .desk-list.d-both { border-top-color: var(--teal); }
+.dtitle { display: flex; justify-content: space-between; gap: 10px; padding: 8px 4px 6px; flex-wrap: wrap; }
+.dtitle > div:first-child { min-width: 0; flex: 1 1 200px; }
+.dkpi { display: flex; gap: 12px; font-size: 12px; flex-wrap: wrap; }
+.dkpi div { display: flex; flex-direction: column; align-items: flex-end; }
+.dkpi span { color: var(--muted); font-size: 11px; }
+.caps { display: grid; gap: 6px; margin-top: 10px; }
+.caps > div { display: grid; grid-template-columns: 110px 1fr 44px; gap: 8px; align-items: center; font-size: 13px; }
+.caps .capbar { margin-top: 0; }
+.caps b { text-align: right; }
+
+/* звания и дески на бейджах */
+.pill.rank-0 { background: rgba(144,133,233,.18); color: var(--violet); }
+.pill.rank-1 { background: var(--card2); color: var(--text); }
+.pill.rank-2 { background: rgba(52,210,123,.16); color: var(--up); }
+.pill.rank-3 { background: rgba(242,201,76,.2); color: var(--gold); font-weight: 600; }
+.pill.desk-bulls { background: rgba(52,210,123,.12); color: var(--up); }
+.pill.desk-bears { background: rgba(255,107,107,.14); color: var(--down); }
+.pill.desk-both { background: rgba(124,216,255,.14); color: var(--teal); }
+.pill.reg-up { background: rgba(52,210,123,.16); color: var(--up); } .pill.reg-down { background: rgba(255,107,107,.16); color: var(--down); } .pill.reg-flat { background: var(--card2); color: var(--muted); }
+.ladder { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin: 10px 0 6px; color: var(--dim); font-size: 12px; }
+
+/* аналитики */
+.analyst { padding: 10px 0; border-top: 1px solid var(--line); }
+.analyst .ahead { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; flex-wrap: wrap; }
+.analyst .ahead small { font-size: 11px; }
+.analyst .aview { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; margin: 4px 0; }
+.kind.rank, .kind.analytics { color: var(--teal); }

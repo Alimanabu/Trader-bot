@@ -1,5 +1,5 @@
-const CACHE = "crazycats-v21";
-const SHELL = ["/", "/static/app.js", "/static/cats.js", "/static/style.css", "/static/icon.svg", "/manifest.json"];
+const CACHE = "botz-v22";
+const SHELL = ["/", "/static/app.js", "/static/style.css", "/static/icon.svg", "/manifest.json"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}));
   self.skipWaiting();

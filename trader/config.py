@@ -53,16 +53,19 @@ class Settings:
     bench_size: int = 30
     team_size: int = 18
     intern_count: int = 20
-    llm_min_interval_min: int = 60     # нейро-агент не может просить будить себя чаще (защита от расходов)
+    llm_min_interval_min: int = 60     # устаревшее: границы темпа нейро-агентов (теперь нейросеть только в аналитике)
     llm_max_interval_min: int = 360
-    llm_news_min_interval_min: int = 240   # новостник с веб-поиском дороже, поэтому реже
+    llm_news_min_interval_min: int = 240
     llm_daily_budget_usd: float = 2.0      # жёсткий потолок расходов на нейросеть в сутки
-    head_policy: bool = True               # руководитель управляет потолком доли по режиму рынка и отвечает за результат
+    head_policy: bool = True               # директор распределяет капитал между десками по режиму рынка и отвечает за результат
     head_fail_weeks: int = 2               # столько недель подряд хуже «просто держать доллары» → защитный подход
-    intern_idle_days: int = 3              # котёнок без единой сделки столько дней отчисляется
-    team_idle_days: int = 7                # кот без сделок столько дней уходит в котята на недельной ротации
-    weekly_demote_max: int = 3             # сколько худших членов команды за неделю можно перевести в стажёры
+    intern_idle_days: int = 3              # стажёр без единой сделки столько дней отчисляется
+    team_idle_days: int = 7                # трейдер без сделок столько дней уходит в стажёры на недельной ротации
+    weekly_demote_max: int = 2             # сколько худших трейдеров каждого деска за неделю можно перевести в стажёры
     live_ready_weeks: int = 3              # недель подряд в плюсе, чтобы стать кандидатом на реальный счёт
+    senior_weeks: int = 2                  # недель подряд в плюсе, чтобы стать старшим трейдером
+    analyst_interval_min: int = 240        # как часто аналитический отдел обновляет взгляд на рынок (минуты)
+    analyst_news_interval_min: int = 480   # новостной аналитик с веб-поиском дороже, поэтому реже
     research_lookback: int = 720
     retune_every_hours: int = 168
     extra: dict = field(default_factory=dict)
@@ -70,6 +73,11 @@ class Settings:
     @property
     def llm_enabled(self) -> bool:
         return bool(self.anthropic_api_key)
+
+    @property
+    def desk_size(self) -> int:
+        """Трейдеров на одном деске. Команда = три деска (быки, медведи, двусторонние)."""
+        return max(1, self.team_size // 3)
 
 
 def load_settings(env_file: str | Path | None = ".env") -> Settings:
@@ -110,8 +118,11 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         head_fail_weeks=int(env.get("HEAD_FAIL_WEEKS", "2")),
         intern_idle_days=int(env.get("INTERN_IDLE_DAYS", "3")),
         team_idle_days=int(env.get("TEAM_IDLE_DAYS", "7")),
-        weekly_demote_max=int(env.get("WEEKLY_DEMOTE_MAX", "3")),
+        weekly_demote_max=int(env.get("WEEKLY_DEMOTE_MAX", "2")),
         live_ready_weeks=int(env.get("LIVE_READY_WEEKS", "3")),
+        senior_weeks=int(env.get("SENIOR_WEEKS", "2")),
+        analyst_interval_min=int(env.get("ANALYST_INTERVAL_MIN", "240")),
+        analyst_news_interval_min=int(env.get("ANALYST_NEWS_INTERVAL_MIN", "480")),
         research_lookback=int(env.get("RESEARCH_LOOKBACK", "720")),
         retune_every_hours=int(env.get("RETUNE_EVERY_HOURS", "168")),
     )

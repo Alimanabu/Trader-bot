@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">CrazyCats</string>
+    <string name="app_name">Botz</string>
     <string name="setup_title">Подключение к отделу</string>
     <string name="setup_hint_url">Адрес панели, например http://2.28.234.131:8080</string>
     <string name="setup_hint_password">Пароль панели</string>

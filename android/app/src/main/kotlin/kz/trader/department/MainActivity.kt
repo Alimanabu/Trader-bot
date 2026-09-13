@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
         passField.setText(password)
         val version = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "?" }
         MaterialAlertDialogBuilder(this)
-            .setTitle("CrazyCats v$version · " + getString(R.string.setup_title))
+            .setTitle("Botz v$version · " + getString(R.string.setup_title))
             .setView(view)
             .setCancelable(url.isNotEmpty())
             .setPositiveButton(R.string.setup_save) { _, _ ->

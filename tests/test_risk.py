@@ -60,6 +60,6 @@ def test_department_halt():
     for a in agents:
         a.observe(97.0)
     ok, why = rm.check_department(agents, 97.0, "2026-01-01")
-    assert not ok and "отдела" in why
+    assert not ok and "компании" in why
     ok2, _ = rm.check_department(agents, 100.0, "2026-01-02")
     assert ok2

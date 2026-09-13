@@ -74,9 +74,14 @@ class Agent:
     streak_weeks: int = 0        # подряд недель в плюсе в основной команде
     trial_weeks: int = 0         # недель на испытательном сроке (1 = только что переведён)
     live_ready: bool = False     # три недели подряд в плюсе: кандидат на реальный счёт
+    rank: int = 1                # звание: 0 стажёр, 1 трейдер, 2 старший трейдер, 3 реальный счёт
 
     def start_balance(self) -> float:
         return self._start_balance
+
+    @property
+    def desk(self) -> str:
+        return {"long": "bulls", "short": "bears", "both": "both"}.get(self.strategy.side, "bulls")
 
     def __post_init__(self) -> None:
         if not self.slot_minute:
@@ -87,6 +92,8 @@ class Agent:
         self._start_balance = self.account.cash + self.account.btc * self.last_price
         self.peak_equity = self.peak_equity or self._start_balance
         self.day_start_equity = self.day_start_equity or self._start_balance
+        if self.status == "intern":
+            self.rank = 0
 
     def equity(self, price: float | None = None) -> float:
         return self.account.equity(price if price is not None else self.last_price)
@@ -179,6 +186,9 @@ class Agent:
             streak_weeks=self.streak_weeks,
             trial_weeks=self.trial_weeks,
             live_ready=self.live_ready,
+            desk=self.desk,
+            rank=self.rank,
+            side=self.strategy.side,
         )
 
 

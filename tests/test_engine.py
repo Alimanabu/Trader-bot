@@ -23,8 +23,9 @@ def test_engine_creates_department(settings):
     eng, _ = make_engine(settings)
     assert len(eng.agents) == settings.team_size == 18
     assert all(a.status == "active" for a in eng.agents)
-    assert sum(1 for a in eng.agents if a.strategy.side == "short") == 3
-    assert sum(1 for a in eng.agents if a.strategy.side == "both") == 4
+    assert sum(1 for a in eng.agents if a.strategy.side == "short") == 6
+    assert sum(1 for a in eng.agents if a.strategy.side == "both") == 6
+    assert all(a.desk in {"bulls", "bears", "both"} and a.rank == 1 for a in eng.agents)
 
 
 def test_tick_records_decisions_and_skips_duplicate(settings):
@@ -39,10 +40,9 @@ def test_tick_records_decisions_and_skips_duplicate(settings):
     assert again.get("skipped")
     market.advance(1)
     res2 = eng.tick(now=T + 3600)
-    # новостник с веб-поиском проверяет рынок не чаще раза в 4 часа, остальные десять успели
-    assert res2["ok"] and not res2.get("skipped") and len(res2["decisions"]) == 17
+    assert res2["ok"] and not res2.get("skipped") and len(res2["decisions"]) == 18
     team_decisions = [d for d in eng.j.recent_decisions(None, 500) if d["agent"] in {a.name for a in eng.agents if a.status == "active"}]
-    assert len(team_decisions) == 35    # первый проход + часовая контрольная запись
+    assert len(team_decisions) == 36    # первый проход + часовая контрольная запись
 
 
 def test_state_persists_between_engines(settings):
@@ -117,14 +117,14 @@ def test_interns_shadow_and_new_default_agent_backfilled(settings):
     assert all(a["status"] != "intern" for a in st["agents"])
     assert st["department"]["start"] == settings.team_size * settings.agent_start_balance
     # имитируем появление нового штатного семейства: удаляем запись из БД и перезагружаем
-    db._exec("DELETE FROM agents WHERE strategy='llm_news'")
+    db._exec("DELETE FROM agents WHERE name='Медведь Supertrend'")
     eng2 = Engine(settings, market=market, journal=db, client=ClaudeClient(None))
-    assert any(a.strategy.family == "llm_news" for a in eng2.agents)
+    assert any(a.strategy.family == "supertrend_short" for a in eng2.agents)
     assert len([a for a in eng2.agents if a.status == "intern"]) == 5
 
 
 def test_weekly_rotation(settings):
-    settings.intern_count = 3
+    settings.intern_count = 6
     eng, market = make_engine(settings)
     last = market.candles("BTCUSDT", "1h", 1)[-1]
     T = last.ts + 3600 + 5
@@ -135,8 +135,8 @@ def test_weekly_rotation(settings):
     worst.account.cash -= 50              # минус за неделю
     streaky.account.cash += 20            # плюс за неделю, уже 2 недели в серии
     streaky.streak_weeks = 2
-    intern = next(a for a in eng.agents if a.status == "intern")
-    intern.account.cash += 30             # лучший котёнок недели
+    intern = next(a for a in eng.agents if a.status == "intern" and a.desk == worst.desk)
+    intern.account.cash += 30             # лучший стажёр недели на том же деске
     loser_intern = [a for a in eng.agents if a.status == "intern" and a is not intern][0]
     loser_intern.account.cash -= 10
     loser_intern.streak_weeks = -1        # уже одна неделя в минусе
@@ -144,7 +144,7 @@ def test_weekly_rotation(settings):
     w = res["weekly"]
     assert worst.name in w["demoted"] and worst.status == "intern" and worst.trial_weeks == 1
     assert intern.name in w["promoted"] and intern.status == "active" and abs(intern.start_balance() - settings.agent_start_balance) < 1e-6
-    assert streaky.name in w["live_ready"] and streaky.live_ready and streaky.streak_weeks == 3
+    assert streaky.name in w["live_ready"] and streaky.live_ready and streaky.streak_weeks == 3 and streaky.rank == 2
     assert loser_intern.name in w["dropped"] and loser_intern.status == "dropped"
     assert any(p["kind"] == "live" and p["details"]["agent"] == streaky.name for p in eng.j.pending_approvals())
     assert len([a for a in eng.agents if a.status in {"active", "paused"}]) == settings.team_size
@@ -166,21 +166,19 @@ def test_agents_check_market_at_their_own_cadence(settings):
     res = eng.tick(now=T + 10 * 60 + 1)
     expected = {a.name for a in eng.agents if not a.strategy.uses_llm() and a.strategy.cadence_minutes() <= 10}
     assert {d["agent"] for d in res["decisions"]} == expected
-    # нейро-агенты без ключа ждут не меньше llm_min_interval_min и не больше llm_max
-    llm = next(a for a in eng.agents if a.strategy.uses_llm())
-    assert settings.llm_min_interval_min * 60 <= llm.next_check_ts - T <= settings.llm_max_interval_min * 60
+    assert not any(a.strategy.uses_llm() for a in eng.agents), "нейросеть больше не торгует"
 
 
-def test_price_alert_wakes_llm_agent(settings):
+def test_price_alert_wakes_agent(settings):
     settings.intern_count = 0
     eng, market = make_engine(settings)
     last = market.candles("BTCUSDT", "1h", 1)[-1]
     T = last.ts + 3600 + 5
     eng.tick(now=T)
-    llm = next(a for a in eng.agents if a.strategy.uses_llm())
-    llm.alert_below = eng.last_price * 2      # цена уже ниже будильника
+    slow = max(eng.agents, key=lambda a: a.strategy.cadence_minutes())
+    slow.alert_below = eng.last_price * 2      # цена уже ниже будильника
     res = eng.tick(now=T + 60)
-    assert llm.name in {d["agent"] for d in res["decisions"]}
+    assert slow.name in {d["agent"] for d in res["decisions"]}
 
 
 def test_quiet_checks_are_not_logged(settings):
@@ -237,8 +235,8 @@ def test_head_regime_caps_and_mode_switch(settings):
     T = last.ts + 3600 + 5
     eng.tick(now=T)
     pol = eng.head.policy()
-    assert pol["regime"] in {"up", "flat", "down"} and 0 < pol["cap"] <= 1.0
-    assert eng.risk.policy_cap == pol["cap"]
+    assert pol["regime"] in {"up", "flat", "down"} and 0 < pol["caps"]["bulls"] <= 1.0
+    assert eng.risk.desk_caps == pol["caps"]
     # режим определяется по свечам
     from trader.models import Candle
     up = [Candle(i * 3600, 100 + i, 101 + i, 99 + i, 100 + i, 1.0) for i in range(260)]
@@ -255,7 +253,8 @@ def test_head_regime_caps_and_mode_switch(settings):
     eng.tick(now=T + 14 * 86400)
     pol = eng.head.policy()
     assert pol["fail_weeks"] >= 2 and pol["mode"] == "defensive"
-    assert pol["cap"] <= 0.7
+    assert pol["caps"]["bulls"] <= 0.6 and pol["alloc_weeks"] == 2
+    assert "equal" in pol["weeks"][-1] and "desks" in pol["weeks"][-1]
     kinds = [e for e in eng.j.recent_events(200) if e["kind"] == "head"]
     assert kinds and any("защитный" in e["message"] for e in kinds)
 
@@ -348,4 +347,56 @@ def test_head_caps_are_side_aware(settings):
     eng, market = make_engine(settings)
     down = [Candle(i * 3600, 400 - i, 401 - i, 399 - i, 400 - i, 1.0) for i in range(260)]
     pol = eng.head.daily_policy(down, down[-1].ts + 3600)
-    assert pol["regime"] == "down" and pol["cap"] < pol["cap_short"] == 1.0
+    assert pol["regime"] == "down" and pol["caps"]["bulls"] < pol["caps"]["bears"] == 1.0
+
+
+def test_director_combines_rules_and_analysts():
+    from trader.manager import Director
+    strong_up = {"regime": "up", "strength": 0.8, "fresh": True, "votes": {}}
+    weak = {"regime": "up", "strength": 0.4, "fresh": True, "votes": {}}
+    assert Director.combine("flat", strong_up)[0] == "up"
+    assert Director.combine("flat", weak)[0] == "flat"
+    assert Director.combine("down", strong_up)[0] == "flat"
+    assert Director.combine("up", strong_up)[0] == "up"
+    assert Director.combine("down", None)[0] == "down"
+
+
+def test_llm_agents_moved_to_analytics_on_load(settings):
+    import json
+    db = Journal(":memory:")
+    eng, market = make_engine(settings, db=db)
+    hours(eng, market, 1)
+    # старая база: нейро-агент в команде
+    db._exec("INSERT INTO agents(name,strategy,params,status,hired_at,cash,btc,peak_equity,day_start_equity,day_key,start_balance) "
+             "VALUES('Нейро-стратег','llm_regime','{}','active',1,1000,0,1000,1000,'',1000)")
+    eng2 = Engine(settings, market=market, journal=db, client=ClaudeClient(None))
+    assert not any(a.strategy.uses_llm() for a in eng2.agents)
+    assert any(e["kind"] == "analytics" and "аналитический" in e["message"] for e in db.recent_events(50))
+    assert len([a for a in eng2.agents if a.status == "active"]) == settings.team_size
+
+
+def test_overfull_desk_is_trimmed_on_load(settings):
+    db = Journal(":memory:")
+    eng, market = make_engine(settings, db=db)
+    hours(eng, market, 1)
+    db._exec("INSERT INTO agents(name,strategy,params,status,hired_at,cash,btc,peak_equity,day_start_equity,day_key,start_balance) "
+             "VALUES('Лишний бык','vol_regime','{}','active',1,900,0,1000,1000,'',1000)")
+    eng2 = Engine(settings, market=market, journal=db, client=ClaudeClient(None))
+    bulls = [a for a in eng2.agents if a.desk == "bulls" and a.status == "active"]
+    assert len(bulls) == settings.desk_size
+    assert next(a for a in eng2.agents if a.name == "Лишний бык").status == "intern"
+
+
+def test_analytics_views_scoring_and_consensus(settings):
+    from trader.analytics import AnalyticsDept
+    j = Journal(":memory:")
+    dept = AnalyticsDept(settings, j, ClaudeClient(None))
+    assert dept.run_due([], 100.0, 1000) == []          # без ключа отдел молчит
+    j.add_view(1000, "Технический аналитик", "up", 0.9, "растём", 100.0)
+    j.add_view(1000, "Макро-стратег", "down", 0.5, "падаем", 100.0)
+    c = dept.consensus(2000)
+    assert c["regime"] == "up" and c["fresh"] and c["strength"] > 0.6
+    assert j.score_views(103.0, 1000 + 25 * 3600) == 2
+    st = j.analyst_stats()
+    assert st["Технический аналитик"]["hits"] == 1 and st["Макро-стратег"]["hits"] == 0
+    assert dept.stats()[0]["accuracy"] == 1.0

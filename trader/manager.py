@@ -1,11 +1,14 @@
-"""Руководитель отдела: следит за командой и стажёрами, увольняет, нанимает, повышает, пишет отчёт.
+"""Директор компании Botz: распределяет капитал между десками, следит за трейдерами и стажёрами,
+увольняет, нанимает, повышает, пишет отчёт и сам отвечает за результат.
 
 Устройство:
-- Команда (team_size агентов) торгует и считается в капитал отдела.
-- Стажёры (intern_count) торгуют в тени на своих демосчетах. В капитал отдела не входят.
+- Три деска: быки (спот, рост), медведи (шорт), двусторонние. На каждом desk_size трейдеров.
+- Стажёры (intern_count) торгуют в тени на своих демосчетах, распределены по дескам.
 - Отдел исследований наполняет скамейку кандидатов; из неё берутся стажёры.
-- Освободившееся место в команде занимает лучший стажёр. Раз в сутки руководитель
-  предлагает владельцу заменить худшего опытного члена команды лучшим опытным стажёром.
+- Карьерная лестница: кандидат → стажёр → трейдер → старший трейдер → реальный счёт.
+- Директор раз в день оценивает режим рынка (свои правила плюс голоса аналитического отдела) и
+  выставляет потолок доли для каждого деска. Раз в неделю его распределение сравнивается с равным
+  («если бы всем дали 100%»), а компания с «держать доллары» и «держать биткоин».
 """
 from __future__ import annotations
 
@@ -13,7 +16,8 @@ import logging
 from datetime import datetime, timezone
 
 from .agents.base import Agent
-from .agents.registry import build_strategy, family_label, new_account
+from .agents.registry import (DESKS, RANK_INTERN, RANK_LIVE, RANK_SENIOR, RANK_TRADER, RANK_LABELS, build_strategy,
+                              desk_of, family_label, family_side, new_account)
 from .config import Settings
 from .journal import Journal
 from .llm import ClaudeClient, LLMUnavailable
@@ -25,6 +29,7 @@ log = logging.getLogger(__name__)
 
 TENURE_DAYS = 14
 TEAM_STATUSES = {"active", "paused"}
+DESK_KEYS = list(DESKS)
 
 REPORT_SCHEMA = {
     "type": "object",
@@ -38,6 +43,8 @@ REPORT_SCHEMA = {
     "additionalProperties": False,
 }
 
+REGIME_RU = {"up": "рост", "flat": "боковик", "down": "падение", "off": "выключено"}
+
 
 def is_team(a: Agent) -> bool:
     return a.status in TEAM_STATUSES
@@ -47,23 +54,41 @@ def is_intern(a: Agent) -> bool:
     return a.status == "intern"
 
 
-class DepartmentHead:
+class Director:
+    # распределение капитала по режиму рынка: потолок доли для каждого деска
+    ALLOC = {
+        "balanced": {
+            "up": {"bulls": 1.0, "bears": 0.3, "both": 0.8},
+            "flat": {"bulls": 0.6, "bears": 0.6, "both": 1.0},
+            "down": {"bulls": 0.3, "bears": 1.0, "both": 0.8},
+        },
+        "defensive": {
+            "up": {"bulls": 0.6, "bears": 0.2, "both": 0.5},
+            "flat": {"bulls": 0.4, "bears": 0.4, "both": 0.6},
+            "down": {"bulls": 0.2, "bears": 0.6, "both": 0.5},
+        },
+    }
+
     def __init__(self, settings: Settings, journal: Journal, client: ClaudeClient | None = None, team_size: int | None = None):
         self.s = settings
         self.j = journal
         self.client = client
-        self.team_size = team_size or settings.team_size
+        self.desk_size = max(1, (team_size or settings.team_size) // 3)
+        self.team_size = self.desk_size * 3
         self.lab = StrategyLab(fee_rate=settings.fee_rate)
 
-    # --- политика руководителя: режим рынка, потолок доли, ответственность за результат ---
-    CAPS = {"balanced": {"up": 1.0, "flat": 0.7, "down": 0.4}, "defensive": {"up": 0.7, "flat": 0.4, "down": 0.2}}
-    CAPS_SHORT = {"balanced": {"up": 0.4, "flat": 0.7, "down": 1.0}, "defensive": {"up": 0.2, "flat": 0.4, "down": 0.7}}
-
+    # --- политика директора ---
     def policy(self) -> dict:
-        return self.j.kv_get("head_policy", None) or {
-            "mode": "balanced", "regime": "flat", "cap": 1.0, "min_rebalance": 0.05,
-            "fail_weeks": 0, "good_weeks": 0, "weeks": [], "changed_ts": 0,
+        pol = self.j.kv_get("head_policy", None) or {}
+        base = {
+            "mode": "balanced", "regime": "flat", "rule_regime": "flat", "caps": dict(self.ALLOC["balanced"]["flat"]),
+            "min_rebalance": 0.05, "fail_weeks": 0, "good_weeks": 0, "weeks": [], "changed_ts": 0,
+            "alloc_wins": 0, "alloc_weeks": 0, "analysts": None, "week_caps": None,
         }
+        base.update(pol)
+        if "caps" not in pol:      # старая политика с cap / cap_short
+            base["caps"] = {"bulls": float(pol.get("cap", 1.0)), "bears": float(pol.get("cap_short", pol.get("cap", 1.0))), "both": 1.0}
+        return base
 
     def _save_policy(self, pol: dict) -> None:
         self.j.kv_set("head_policy", pol)
@@ -83,60 +108,104 @@ class DepartmentHead:
             return "down"
         return "flat"
 
-    def daily_policy(self, candles: list[Candle], ts: int) -> dict:
-        """Раз в день: оценить рынок и выставить потолок доли для всего отдела."""
+    @staticmethod
+    def combine(rule: str, consensus: dict | None, threshold: float = 0.65) -> tuple[str, str]:
+        """Итоговый режим: правила директора плюс уверенный консенсус аналитиков.
+
+        - Правила говорят «боковик», а аналитики уверенно за рост или падение → берём их сторону.
+        - Правила говорят рост/падение, а аналитики уверенно против → боковик (осторожность).
+        Возвращает (режим, источник).
+        """
+        if not consensus or not consensus.get("fresh") or consensus.get("strength", 0) < threshold:
+            return rule, "правила"
+        a = consensus["regime"]
+        if rule == "flat" and a in {"up", "down"}:
+            return a, "аналитики"
+        if rule in {"up", "down"} and a in {"up", "down"} and a != rule:
+            return "flat", "спор правил и аналитиков"
+        return rule, "правила и аналитики согласны" if a == rule else "правила"
+
+    def daily_policy(self, candles: list[Candle], ts: int, consensus: dict | None = None) -> dict:
+        """Оценить рынок и распределить капитал между десками."""
         pol = self.policy()
         if not self.s.head_policy:
-            pol.update({"cap": 1.0, "cap_short": 1.0, "regime": "off"})
+            pol.update({"caps": {k: 1.0 for k in DESK_KEYS}, "regime": "off"})
             self._save_policy(pol)
             return pol
-        regime = self.assess_regime(candles)
-        cap = self.CAPS[pol["mode"]][regime]
-        cap_short = self.CAPS_SHORT[pol["mode"]][regime]
-        if regime != pol.get("regime") or abs(cap - pol.get("cap", 1.0)) > 1e-9:
-            names = {"up": "рост", "flat": "боковик", "down": "падение"}
-            self.j.event("head", f"Руководитель: рынок — {names[regime]}, потолок для лонга {cap:.0%}, для шорта {cap_short:.0%} "
+        rule = self.assess_regime(candles)
+        regime, source = self.combine(rule, consensus)
+        caps = dict(self.ALLOC[pol["mode"]][regime])
+        if regime != pol.get("regime") or caps != pol.get("caps"):
+            desc = ", ".join(f"{DESKS[k]['label'].lower()} {caps[k]:.0%}" for k in DESK_KEYS)
+            self.j.event("head", f"Директор: рынок — {REGIME_RU[regime]} (источник: {source}). Капитал по дескам: {desc} "
                                  f"(подход: {'обычный' if pol['mode'] == 'balanced' else 'защитный'})", None,
-                         {"regime": regime, "cap": cap, "cap_short": cap_short, "mode": pol["mode"]}, ts=ts)
-        pol["regime"], pol["cap"], pol["cap_short"], pol["changed_ts"] = regime, cap, cap_short, ts
+                         {"regime": regime, "rule_regime": rule, "caps": caps, "mode": pol["mode"], "source": source}, ts=ts)
+        pol.update({"regime": regime, "rule_regime": rule, "caps": caps, "changed_ts": ts, "source": source,
+                    "analysts": {k: consensus[k] for k in ("regime", "strength", "votes")} if consensus else None})
+        if not pol.get("week_caps"):
+            pol["week_caps"] = dict(caps)
         self._save_policy(pol)
         return pol
 
+    def desk_members(self, agents: list[Agent], desk: str, interns: bool = False) -> list[Agent]:
+        return [a for a in agents if a.desk == desk and (is_intern(a) if interns else is_team(a))]
+
     def weekly_policy(self, agents: list[Agent], candles: list[Candle], price: float, ts: int) -> dict:
-        """Раз в неделю: KPI руководителя. Сравнение с «держать доллары» и «держать биткоин», смена подхода."""
+        """KPI директора за неделю: компания против долларов и биткоина, распределение против равного."""
         pol = self.policy()
         team = [a for a in agents if is_team(a) and a.week_start_equity > 0]
         if not team:
             return pol
         start = sum(a.week_start_equity for a in team)
-        dept_pct = (sum(a.equity(price) for a in team) - start) / start * 100 if start else 0.0
+        pnl = sum(a.equity(price) - a.week_start_equity for a in team)
+        company_pct = pnl / start * 100 if start else 0.0
         week_ago = [c for c in candles if c.ts <= ts - 7 * 86400]
         btc_pct = (price / week_ago[-1].close - 1) * 100 if week_ago else 0.0
         fees = self.j.fees_since(ts - 7 * 86400, {a.name for a in team})
-        loss = max(0.0, -(sum(a.equity(price) for a in team) - start))
+        loss = max(0.0, -pnl)
         fee_share = fees / loss if loss > 0 else 0.0
-        beat_cash = dept_pct > 0
-        pol["weeks"] = (pol.get("weeks") or [])[-11:] + [{"ts": ts, "dept": round(dept_pct, 2), "btc": round(btc_pct, 2), "fees": round(fees, 2)}]
+        # по дескам и оценка «равного распределения»: результат деска делим на выданный ему потолок
+        week_caps = pol.get("week_caps") or pol["caps"]
+        desks: dict[str, dict] = {}
+        equal_pnl = 0.0
+        for d in DESK_KEYS:
+            members = [a for a in team if a.desk == d]
+            d_start = sum(a.week_start_equity for a in members)
+            d_pnl = sum(a.equity(price) - a.week_start_equity for a in members)
+            cap = max(0.1, float(week_caps.get(d, 1.0)))
+            equal_pnl += d_pnl / cap
+            bench = btc_pct if d == "bulls" else (-btc_pct if d == "bears" else 0.0)
+            desks[d] = {"pct": round(d_pnl / d_start * 100, 2) if d_start else 0.0, "bench": round(bench, 2),
+                        "cap": cap, "agents": len(members), "pnl": round(d_pnl, 2)}
+        equal_pct = equal_pnl / start * 100 if start else 0.0
+        beat_cash = company_pct > 0
+        beat_equal = company_pct >= equal_pct - 1e-9
+        pol["alloc_weeks"] = pol.get("alloc_weeks", 0) + 1
+        pol["alloc_wins"] = pol.get("alloc_wins", 0) + (1 if beat_equal else 0)
+        pol["weeks"] = (pol.get("weeks") or [])[-11:] + [{"ts": ts, "dept": round(company_pct, 2), "equal": round(equal_pct, 2),
+                                                          "btc": round(btc_pct, 2), "fees": round(fees, 2), "desks": desks}]
         pol["fail_weeks"] = 0 if beat_cash else pol.get("fail_weeks", 0) + 1
         pol["good_weeks"] = pol.get("good_weeks", 0) + 1 if beat_cash else 0
-        notes = [f"отдел {dept_pct:+.2f}% за неделю, биткоин {btc_pct:+.2f}%, комиссии {fees:.2f} $"]
-        # торговать реже, если потери в основном из комиссий
+        notes = [f"компания {company_pct:+.2f}% за неделю, при равном распределении было бы {equal_pct:+.2f}%, "
+                 f"биткоин {btc_pct:+.2f}%, комиссии {fees:.2f} $"]
+        notes.append("; ".join(f"{DESKS[d]['label'].lower()} {desks[d]['pct']:+.2f}% (ориентир {desks[d]['bench']:+.2f}%)" for d in DESK_KEYS))
+        notes.append("распределение директора помогло" if beat_equal else "распределение директора помешало")
         new_min = 0.10 if fee_share > 0.5 else 0.05
         if abs(new_min - pol.get("min_rebalance", 0.05)) > 1e-9:
             notes.append("комиссии съедают больше половины потерь: торгуем реже" if new_min > 0.05 else "порог сделок возвращён к обычному")
         pol["min_rebalance"] = new_min
-        # смена подхода
         if pol["fail_weeks"] >= self.s.head_fail_weeks and pol["mode"] == "balanced":
             pol["mode"] = "defensive"
             notes.append(f"{pol['fail_weeks']} недели подряд хуже долларов: перехожу на защитный подход и переобучаю всех")
             self.retrain(agents, candles, ts, all_agents=True)
-        elif pol["good_weeks"] >= 2 and pol["mode"] == "defensive" and pol.get("regime") == "up":
+        elif pol["good_weeks"] >= 2 and pol["mode"] == "defensive":
             pol["mode"] = "balanced"
-            notes.append("две недели в плюсе и рынок растёт: возвращаю обычный подход")
-        pol["cap"] = self.CAPS[pol["mode"]].get(pol.get("regime", "flat"), 1.0) if self.s.head_policy else 1.0
-        pol["cap_short"] = self.CAPS_SHORT[pol["mode"]].get(pol.get("regime", "flat"), 1.0) if self.s.head_policy else 1.0
+            notes.append("две недели в плюсе: возвращаю обычный подход")
+        regime = pol.get("regime", "flat")
+        pol["caps"] = dict(self.ALLOC[pol["mode"]][regime]) if self.s.head_policy and regime in self.ALLOC[pol["mode"]] else {k: 1.0 for k in DESK_KEYS}
+        pol["week_caps"] = dict(pol["caps"])
         self._save_policy(pol)
-        self.j.event("head", "Отчёт руководителя за неделю: " + "; ".join(notes), None, pol, ts=ts)
+        self.j.event("head", "Отчёт директора за неделю: " + "; ".join(notes), None, pol, ts=ts)
         return pol
 
     def retrain(self, agents: list[Agent], candles: list[Candle], ts: int, all_agents: bool = False, only: list[Agent] | None = None) -> int:
@@ -172,6 +241,20 @@ class DepartmentHead:
         self.j.set_status(agent.name, "dropped", ts)
         self.j.event("drop", f"Стажёр {agent.name} отчислен: {reason}", agent.name, ts=ts)
 
+    def demote(self, a: Agent, price: float, ts: int, why: str, candles: list[Candle] | None = None) -> None:
+        """Трейдер → стажёр на испытательный срок со свежим счётом."""
+        a.account.flatten(price, ts, "перевод в стажёры")
+        a.reset_account(self.s.agent_start_balance, ts)
+        if candles:
+            self.retrain([a], candles, ts, only=[a])
+        a.status = "intern"
+        a.rank = RANK_INTERN
+        a.streak_weeks = 0
+        a.trial_weeks = 1
+        a.live_ready = False
+        self.j.save_agent(a)
+        self.j.event("demote", f"{a.name} переведён в стажёры: {why}", a.name, ts=ts)
+
     # --- скамейка кандидатов ---
     def _taken(self, agents: list[Agent]) -> set[str]:
         return {combo_key(a.strategy.family, a.strategy.params) for a in agents if a.status not in {"fired", "dropped"}}
@@ -186,6 +269,19 @@ class DepartmentHead:
                      None, {"candidates": [result_to_dict(r) for r in results[:10]]}, ts=ts)
         return len(results)
 
+    def _take_candidate(self, agents: list[Agent], desk: str | None = None) -> dict | None:
+        """Лучший кандидат со скамейки для деска (или любого), ещё не работающий в компании."""
+        taken = self._taken(agents)
+        for r in self.j.bench():
+            if desk and desk_of(family_side(r["strategy"])) != desk:
+                continue
+            key = combo_key(r["strategy"], r["params"])
+            self.j.mark_bench_used(r["id"])
+            if key in taken:
+                continue
+            return r
+        return None
+
     # --- имена ---
     def _unique_name(self, family: str, existing: list[Agent]) -> str:
         base = family_label(family)
@@ -199,13 +295,14 @@ class DepartmentHead:
     def _create(self, family: str, params: dict, existing: list[Agent], ts: int, status: str) -> Agent:
         name = self._unique_name(family, existing)
         strat = build_strategy(family, params, self.client)
-        agent = Agent(name=name, strategy=strat, account=new_account(self.s, name, allow_short=strat.side != "long"), hired_at=ts, status=status)
+        agent = Agent(name=name, strategy=strat, account=new_account(self.s, name, allow_short=strat.side != "long"), hired_at=ts, status=status,
+                      rank=RANK_INTERN if status == "intern" else RANK_TRADER)
         self.j.save_agent(agent)
         return agent
 
     # --- стажёры ---
     def fill_interns(self, agents: list[Agent], candles: list[Candle], ts: int) -> list[Agent]:
-        """Добрать стажёров до intern_count из скамейки кандидатов."""
+        """Добрать стажёров до intern_count из скамейки кандидатов, по очереди для каждого деска."""
         interns = [a for a in agents if is_intern(a)]
         need = self.s.intern_count - len(interns)
         added: list[Agent] = []
@@ -213,19 +310,31 @@ class DepartmentHead:
             return added
         if not self.j.bench():
             self.refresh_bench(candles, ts, agents)
-        for _ in range(need):
-            cand = self.j.take_from_bench(self._taken(agents + added))
+        counts = {d: len([a for a in interns if a.desk == d]) for d in DESK_KEYS}
+        misses = 0
+        while len(added) < need and misses < len(DESK_KEYS):
+            desk = min(DESK_KEYS, key=lambda d: counts[d])       # деск, где стажёров меньше всего
+            cand = self._take_candidate(agents + added, desk) or None
             if not cand:
-                break
+                misses += 1
+                counts[desk] += 10 ** 6            # этот деск больше не пробуем
+                continue
             a = self._create(cand["strategy"], cand["params"], agents + added, ts, "intern")
             added.append(a)
+            counts[desk] += 1
+        if len(added) < need:                       # добираем чем угодно
+            while len(added) < need:
+                cand = self._take_candidate(agents + added)
+                if not cand:
+                    break
+                added.append(self._create(cand["strategy"], cand["params"], agents + added, ts, "intern"))
         if added:
             self.j.event("intern", f"Набрано стажёров: {len(added)} ({', '.join(a.name for a in added[:6])}{'…' if len(added) > 6 else ''})", None, ts=ts)
         return added
 
-    def best_intern(self, agents: list[Agent], price: float, min_days: int = 0) -> Agent | None:
-        pool = [a for a in agents if is_intern(a)]
-        # только что переведённые в котята отбывают испытательный срок: минимум неделю не возвращаем
+    def best_intern(self, agents: list[Agent], price: float, min_days: int = 0, desk: str | None = None) -> Agent | None:
+        pool = [a for a in agents if is_intern(a) and (desk is None or a.desk == desk)]
+        # только что переведённые в стажёры отбывают испытательный срок: минимум неделю не возвращаем
         pool = [a for a in pool if not (a.trial_weeks > 0 and self._days(a) < 7)]
         seasoned = [a for a in pool if self._days(a) >= min_days]
         if not seasoned:
@@ -236,46 +345,62 @@ class DepartmentHead:
         return max(0.0, (a.last_ts_seen - a.hired_at) / 86400) if getattr(a, "last_ts_seen", 0) else 0.0
 
     # --- найм в команду ---
+    def vacancies(self, agents: list[Agent]) -> dict[str, int]:
+        return {d: self.desk_size - len(self.desk_members(agents, d)) for d in DESK_KEYS}
+
     def hire_if_needed(self, agents: list[Agent], candles: list[Candle], ts: int) -> list[Agent]:
         price = candles[-1].close
-        team = [a for a in agents if is_team(a)]
-        vacancies = self.team_size - len(team)
         hired: list[Agent] = []
-        if vacancies <= 0:
+        vac = self.vacancies(agents)
+        if all(v <= 0 for v in vac.values()):
             return hired
         if not self.s.auto_hire:
             if not any(p["kind"] == "hire" for p in self.j.pending_approvals()):
-                best = self.best_intern(agents, price)
-                self.j.request_approval("hire", "Нанять в команду лучшего стажёра?",
-                                        {"intern": best.name if best else None, "pnl": round(best.pnl_total(price), 2) if best else None}, ts=ts)
+                desk = next(d for d in DESK_KEYS if vac[d] > 0)
+                best = self.best_intern(agents, price, desk=desk) or self.best_intern(agents, price)
+                self.j.request_approval("hire", f"Нанять в деск «{DESKS[desk]['label']}» лучшего стажёра?",
+                                        {"intern": best.name if best else None, "desk": desk,
+                                         "pnl": round(best.pnl_total(price), 2) if best else None}, ts=ts)
             return hired
-        for _ in range(vacancies):
-            best = self.best_intern(agents, price, min_days=3) or self.best_intern(agents, price)
-            if best is not None:
-                self.promote(best, price, ts, "занял свободное место в команде")
-                hired.append(best)
-                continue
-            # стажёров нет — берём кандидата со скамейки напрямую
-            if not self.j.bench():
-                self.refresh_bench(candles, ts, agents + hired)
-            cand = self.j.take_from_bench(self._taken(agents + hired))
-            if not cand:
-                break
-            a = self._create(cand["strategy"], cand["params"], agents + hired, ts, "active")
-            self.j.event("hire", f"Нанят {a.name} ({a.strategy.family}, {cand['params']})", a.name, ts=ts)
-            hired.append(a)
+        for desk in DESK_KEYS:
+            for _ in range(max(0, vac[desk])):
+                best = self.best_intern(agents + hired, price, min_days=3, desk=desk) or self.best_intern(agents + hired, price, desk=desk)
+                if best is not None and best not in hired:
+                    self.promote(best, price, ts, f"занял свободное место в деске «{DESKS[desk]['label']}»")
+                    hired.append(best)
+                    continue
+                if not self.j.bench():
+                    self.refresh_bench(candles, ts, agents + hired)
+                cand = self._take_candidate(agents + hired, desk)
+                if not cand:
+                    break
+                a = self._create(cand["strategy"], cand["params"], agents + hired, ts, "active")
+                self.j.event("hire", f"Нанят {a.name} в деск «{DESKS[desk]['label']}» ({a.strategy.family}, {cand['params']})", a.name, ts=ts)
+                hired.append(a)
         return hired
 
     def promote(self, intern: Agent, price: float, ts: int, reason: str) -> None:
-        """Стажёр становится членом команды со свежим счётом."""
+        """Стажёр становится трейдером со свежим счётом."""
         pnl = intern.pnl_total(price)
         days = self._days(intern)
         intern.account.flatten(price, ts, "повышение: сброс счёта")
         intern.reset_account(self.s.agent_start_balance, ts)
         intern.status = "active"
+        intern.rank = RANK_TRADER
         self.j.save_agent(intern)
-        self.j.event("hire", f"{intern.name} повышен из стажёров ({reason}; за {days:.0f} дн. стажировки {pnl:+.2f} $)", intern.name, ts=ts)
+        self.j.event("hire", f"{intern.name} повышен до трейдера ({reason}; за {days:.0f} дн. стажировки {pnl:+.2f} $)", intern.name, ts=ts)
         log.info("Повышен %s", intern.name)
+
+    def trim_desks(self, agents: list[Agent], price: float, ts: int, candles: list[Candle] | None = None) -> list[str]:
+        """Если на деске трейдеров больше desk_size (после перестройки компании), худшие лишние уходят в стажёры."""
+        out: list[str] = []
+        for d in DESK_KEYS:
+            members = sorted(self.desk_members(agents, d), key=lambda a: a.pnl_total(price))
+            extra = len(members) - self.desk_size
+            for a in members[:max(0, extra)]:
+                self.demote(a, price, ts, f"деск «{DESKS[d]['label']}» переполнен, худший по результату", candles)
+                out.append(a.name)
+        return out
 
     # --- активность ---
     @staticmethod
@@ -310,21 +435,22 @@ class DepartmentHead:
         return f"{d[0]}-W{d[1]:02d}"
 
     def weekly_review(self, agents: list[Agent], price: float, ts: int, candles: list[Candle] | None = None) -> dict:
-        """Понедельник, начало недели по UTC.
+        """Понедельник, начало недели по UTC. На каждом деске отдельно:
 
-        1. Члены команды с минусом за неделю (не больше weekly_demote_max худших) → стажёры на испытательный срок.
-        2. Их места занимают лучшие стажёры с плюсом за неделю (со свежим счётом).
-        3. Серия недель в плюсе: live_ready_weeks подряд → кандидат на реальный счёт.
+        1. Трейдеры с минусом за неделю (не больше weekly_demote_max худших) → стажёры на испытательный срок.
+        2. Их места занимают лучшие стажёры деска с плюсом за неделю (со свежим счётом).
+        3. Звания: senior_weeks недель в плюсе подряд → старший трейдер; минус → снова трейдер;
+           live_ready_weeks подряд → кандидат на реальный счёт (нужно ваше одобрение).
         4. Стажёр с минусом две недели подряд → отчислен, его место займёт новый кандидат.
         """
-        res = {"demoted": [], "promoted": [], "dropped": [], "live_ready": []}
+        res = {"demoted": [], "promoted": [], "dropped": [], "live_ready": [], "senior": []}
         team = [a for a in agents if is_team(a)]
         interns = [a for a in agents if is_intern(a)]
         if not team:
             return res
         if candles:
             res["head"] = self.weekly_policy(agents, candles, price, ts)
-        # серии
+        # серии и звания
         for a in team:
             if a.week_start_equity <= 0:
                 continue
@@ -332,52 +458,49 @@ class DepartmentHead:
                 a.streak_weeks += 1
             else:
                 a.streak_weeks = 0
+                if a.rank == RANK_SENIOR:
+                    a.rank = RANK_TRADER
+                    self.j.event("rank", f"{a.name}: минус за неделю, снова трейдер", a.name, ts=ts)
             if a.trial_weeks:
                 a.trial_weeks += 1
+            if a.streak_weeks >= self.s.senior_weeks and a.rank == RANK_TRADER:
+                a.rank = RANK_SENIOR
+                res["senior"].append(a.name)
+                self.j.event("rank", f"{a.name}: {a.streak_weeks} недели подряд в плюсе, повышен до старшего трейдера", a.name, ts=ts)
             if a.streak_weeks >= self.s.live_ready_weeks and not a.live_ready:
                 a.live_ready = True
                 res["live_ready"].append(a.name)
                 self.j.event("live_ready", f"{a.name}: {a.streak_weeks} недели подряд в плюсе, кандидат на реальный счёт", a.name, ts=ts)
                 self.j.request_approval("live", f"{a.name} готов к реальным торгам. Переводить?",
                                         {"agent": a.name, "streak_weeks": a.streak_weeks}, ts=ts)
-        # понижение
-        rated = sorted([a for a in team if a.week_start_equity > 0], key=lambda a: a.pnl_week_pct(price))
-        losers = [a for a in rated if a.pnl_week_pct(price) < 0][: self.s.weekly_demote_max]
-        # спящие: без единой сделки team_idle_days дней — тоже в котята, но только если есть кем заменить
-        # (активные котята с плюсом за неделю), иначе команда осталась бы пустой
-        promotable = [a for a in interns if a.week_start_equity > 0 and a.pnl_week_pct(price) > 0]
-        idle_slots = max(0, len(promotable) - len(losers))
-        for a in sorted(rated, key=lambda a: -self.idle_days(a, ts)):
-            if idle_slots <= 0:
-                break
-            if a not in losers and self.idle_days(a, ts) >= self.s.team_idle_days:
-                losers.append(a)
-                idle_slots -= 1
-        for a in losers:
-            pct = a.pnl_week_pct(price)
-            a.account.flatten(price, ts, "перевод в стажёры")
-            a.reset_account(self.s.agent_start_balance, ts)
-            if candles:
-                self.retrain(agents, candles, ts, only=[a])
-            a.status = "intern"
-            a.streak_weeks = 0
-            a.trial_weeks = 1
-            a.live_ready = False
-            self.j.save_agent(a)
-            res["demoted"].append(a.name)
-            why = f"неделя {pct:+.2f}%" if pct < 0 else f"нет сделок {self.idle_days(a, ts):.0f} дн."
-            self.j.event("demote", f"{a.name} переведён в стажёры: {why}", a.name, ts=ts)
-        # повышение лучших стажёров с плюсом за неделю
-        vacancies = self.team_size - len([a for a in agents if is_team(a)])
-        cands = sorted([a for a in interns if a.week_start_equity > 0 and a.pnl_week_pct(price) > 0],
-                       key=lambda a: a.pnl_week_pct(price), reverse=True)
-        for a in cands[:max(0, vacancies)]:
-            pct = a.pnl_week_pct(price)
-            self.promote(a, price, ts, f"лучший стажёр недели, {pct:+.2f}%")
-            a.trial_weeks = 1
-            a.streak_weeks = 0
-            self.j.save_agent(a)
-            res["promoted"].append(a.name)
+        for desk in DESK_KEYS:
+            members = [a for a in team if a.desk == desk and a.week_start_equity > 0]
+            d_interns = [a for a in interns if a.desk == desk]
+            rated = sorted(members, key=lambda a: a.pnl_week_pct(price))
+            losers = [a for a in rated if a.pnl_week_pct(price) < 0][: self.s.weekly_demote_max]
+            # спящие: без единой сделки team_idle_days дней тоже в стажёры, но только если есть кем заменить
+            promotable = [a for a in d_interns if a.week_start_equity > 0 and a.pnl_week_pct(price) > 0]
+            idle_slots = max(0, len(promotable) - len(losers))
+            for a in sorted(rated, key=lambda a: -self.idle_days(a, ts)):
+                if idle_slots <= 0:
+                    break
+                if a not in losers and self.idle_days(a, ts) >= self.s.team_idle_days:
+                    losers.append(a)
+                    idle_slots -= 1
+            for a in losers:
+                pct = a.pnl_week_pct(price)
+                why = f"неделя {pct:+.2f}%" if pct < 0 else f"нет сделок {self.idle_days(a, ts):.0f} дн."
+                self.demote(a, price, ts, why, candles)
+                res["demoted"].append(a.name)
+            vacancies = self.desk_size - len(self.desk_members(agents, desk))
+            cands = sorted(promotable, key=lambda a: a.pnl_week_pct(price), reverse=True)
+            for a in cands[:max(0, vacancies)]:
+                pct = a.pnl_week_pct(price)
+                self.promote(a, price, ts, f"лучший стажёр недели в деске «{DESKS[desk]['label']}», {pct:+.2f}%")
+                a.trial_weeks = 1
+                a.streak_weeks = 0
+                self.j.save_agent(a)
+                res["promoted"].append(a.name)
         # отчисление стажёров с минусом две недели подряд
         for a in [x for x in agents if is_intern(x) and x.week_start_equity > 0]:
             if a.pnl_week_pct(price) < 0:
@@ -387,23 +510,30 @@ class DepartmentHead:
                     res["dropped"].append(a.name)
             else:
                 a.streak_weeks = 0
-        self.j.event("weekly", f"Недельная ротация: в стажёры {len(res['demoted'])}, в команду {len(res['promoted'])}, "
-                               f"отчислено {len(res['dropped'])}, кандидатов на реальный счёт {len(res['live_ready'])}", None, res, ts=ts)
+        self.j.event("weekly", f"Недельная ротация: в стажёры {len(res['demoted'])}, в трейдеры {len(res['promoted'])}, "
+                               f"старших трейдеров +{len(res['senior'])}, отчислено {len(res['dropped'])}, "
+                               f"кандидатов на реальный счёт {len(res['live_ready'])}", None, res, ts=ts)
         return res
+
+    def approve_live(self, a: Agent, ts: int) -> None:
+        a.rank = RANK_LIVE
+        self.j.save_agent(a)
+        self.j.event("rank", f"{a.name}: одобрен перевод на реальный счёт (модуль реальной торговли ещё не подключён, торгует на демо)", a.name, ts=ts)
 
     def _report(self, team: list[Agent], interns: list[Agent], price: float, ts: int) -> None:
         rows = [a.snapshot(price) for a in team]
         total = sum(r.equity for r in rows)
-        table = "\n".join(f"{r.name} [{r.strategy}] статус={r.status} капитал={r.equity:.2f} день={r.pnl_day:+.2f} "
-                          f"всего={r.pnl_total:+.2f} просадка={r.drawdown*100:.1f}% сделок={r.trades} "
+        table = "\n".join(f"{r.name} [{r.strategy}] деск={DESKS[r.desk]['label']} звание={RANK_LABELS.get(r.rank)} капитал={r.equity:.2f} "
+                          f"день={r.pnl_day:+.2f} всего={r.pnl_total:+.2f} просадка={r.drawdown*100:.1f}% сделок={r.trades} "
                           f"последнее: {r.last_reason}" for r in rows)
         irows = sorted((a.snapshot(price) for a in interns), key=lambda r: r.pnl_total, reverse=True)[:5]
         itable = "\n".join(f"{r.name} [{r.strategy}] всего={r.pnl_total:+.2f} просадка={r.drawdown*100:.1f}%" for r in irows)
-        text = f"Капитал отдела: {total:.2f}. Команда:\n{table}\n\nЛучшие стажёры:\n{itable or 'нет'}"
+        text = f"Капитал компании: {total:.2f}. Трейдеры:\n{table}\n\nЛучшие стажёры:\n{itable or 'нет'}"
         if self.client and self.client.enabled:
             try:
                 data = self.client.structured(
-                    "Ты руководитель отдела алгоритмической торговли. Тебе дают дневную сводку по команде и стажёрам. "
+                    "Ты директор компании алгоритмической торговли Botz с тремя десками (быки, медведи, двусторонние). "
+                    "Тебе дают дневную сводку по трейдерам и стажёрам. "
                     "Напиши короткий отчёт для владельца: что произошло, кто лучший, кто худший, что рекомендуешь. "
                     "Рекомендации должны быть конкретными и проверяемыми.",
                     text, REPORT_SCHEMA, max_tokens=2000)
@@ -413,7 +543,10 @@ class DepartmentHead:
                 log.warning("отчёт без LLM: %s", e)
         best = max(rows, key=lambda r: r.pnl_total)
         worst = min(rows, key=lambda r: r.pnl_total)
-        self.j.event("report", f"Капитал отдела {total:.2f}. Лучший: {best.name} ({best.pnl_total:+.2f}), "
+        self.j.event("report", f"Капитал компании {total:.2f}. Лучший: {best.name} ({best.pnl_total:+.2f}), "
                                f"худший: {worst.name} ({worst.pnl_total:+.2f})."
                                + (f" Лучший стажёр: {irows[0].name} ({irows[0].pnl_total:+.2f})." if irows else ""),
                      None, {"best_agent": best.name, "worst_agent": worst.name}, ts=ts)
+
+
+DepartmentHead = Director

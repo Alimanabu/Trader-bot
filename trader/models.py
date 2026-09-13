@@ -85,3 +85,6 @@ class AgentSnapshot:
     streak_weeks: int = 0
     trial_weeks: int = 0
     live_ready: bool = False
+    desk: str = "bulls"
+    rank: int = 1
+    side: str = "long"

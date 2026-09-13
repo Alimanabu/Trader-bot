@@ -1,7 +1,7 @@
 """Цикл обучения. Система учится на журнале, а не «сама по себе».
 
 1. Каждому решению через несколько часов проставляется результат (куда пошла цена).
-2. Раз в сутки для нейро-агентов из ошибок формируются «уроки», которые попадают в их промпт.
+2. Раз в сутки для нейро-аналитиков из ошибочных взглядов формируются «уроки», которые попадают в их промпт.
 3. Раз в неделю параметры агентов на правилах перепроверяются бэктестом на свежей истории.
 """
 from __future__ import annotations
@@ -43,6 +43,7 @@ class Learner:
             for a in agents:
                 if a.strategy.uses_llm() and a.status != "fired":
                     self._make_lesson(a, ts)
+            self.analyst_lessons(ts)
         last_retune = self.j.kv_get("last_retune_ts", 0)
         if ts - last_retune >= self.s.retune_every_hours * 3600:
             self.j.kv_set("last_retune_ts", ts)
@@ -76,6 +77,41 @@ class Learner:
         if buys >= sells:
             return f"Из последних {len(mistakes)} ошибок {buys} — покупки перед падением. Требуй подтверждения тренда перед входом."
         return f"Из последних {len(mistakes)} ошибок {sells} — продажи перед ростом. Не выходи из позиции на первом откате."
+
+    def analyst_lessons(self, ts: int) -> int:
+        """Уроки аналитикам по взглядам, которые не подтвердились ценой."""
+        n = 0
+        for name in {v["analyst"] for v in self.j.latest_views()}:
+            mistakes = self.j.analyst_mistakes(name, limit=6)
+            if len(mistakes) < 2:
+                continue
+            last_lesson_ts = self.j.kv_get(f"analyst_lesson_ts:{name}", 0)
+            if mistakes[0]["ts"] <= last_lesson_ts:
+                continue
+            self.j.kv_set(f"analyst_lesson_ts:{name}", mistakes[0]["ts"])
+            ru = {"up": "рост", "flat": "боковик", "down": "падение"}
+            lines = [f"{ru.get(m['regime'], m['regime'])} с уверенностью {m['confidence']:.0%} («{m['summary'][:120]}») → цена через сутки: {m['outcome_pct']:+.2f}%"
+                     for m in mistakes]
+            text = ""
+            if self.client and self.client.enabled:
+                try:
+                    data = self.client.structured(
+                        "Ты наставник рыночного аналитика. Тебе дают его ошибочные прогнозы. Сформулируй один короткий "
+                        "конкретный урок (одно-два предложения), который поможет не повторять эту ошибку. Без общих слов.",
+                        "Ошибки:\n" + "\n".join(lines), LESSON_SCHEMA, max_tokens=800)
+                    text = data["lesson"].strip()
+                except LLMUnavailable as e:
+                    log.warning("урок аналитику без LLM: %s", e)
+            if not text:
+                ups = sum(1 for m in mistakes if m["regime"] == "up")
+                downs = sum(1 for m in mistakes if m["regime"] == "down")
+                text = (f"Из последних {len(mistakes)} ошибок {ups} — ожидание роста, которого не случилось. Не спеши со ставкой на рост."
+                        if ups >= downs else
+                        f"Из последних {len(mistakes)} ошибок {downs} — ожидание падения, которого не случилось. Не спеши со ставкой на падение.")
+            self.j.lesson(name, text, ts)
+            self.j.event("lesson", f"{name}: {text}", name, ts=ts)
+            n += 1
+        return n
 
     def retune(self, agents: list[Agent], candles: list[Candle], ts: int) -> list[str]:
         """Проверить параметры агентов на правилах на свежей истории и обновить, если есть явное улучшение."""
