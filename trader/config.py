@@ -66,6 +66,8 @@ class Settings:
     senior_weeks: int = 2                  # недель подряд в плюсе, чтобы стать старшим трейдером
     analyst_interval_min: int = 240        # как часто аналитический отдел обновляет взгляд на рынок (минуты)
     analyst_news_interval_min: int = 480   # новостной аналитик с веб-поиском дороже, поэтому реже
+    strategist_interval_h: int = 72        # как часто стратег развития пишет наблюдения и предложения
+    memory_min_days: int = 10              # с какого объёма память по режиму влияет на решения директора
     research_lookback: int = 720
     retune_every_hours: int = 168
     extra: dict = field(default_factory=dict)
@@ -123,6 +125,8 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         senior_weeks=int(env.get("SENIOR_WEEKS", "2")),
         analyst_interval_min=int(env.get("ANALYST_INTERVAL_MIN", "240")),
         analyst_news_interval_min=int(env.get("ANALYST_NEWS_INTERVAL_MIN", "480")),
+        strategist_interval_h=int(env.get("STRATEGIST_INTERVAL_H", "72")),
+        memory_min_days=int(env.get("MEMORY_MIN_DAYS", "10")),
         research_lookback=int(env.get("RESEARCH_LOOKBACK", "720")),
         retune_every_hours=int(env.get("RETUNE_EVERY_HOURS", "168")),
     )

@@ -6,6 +6,8 @@
 3. Дневной лимит убытка агента: при превышении позиция закрывается, агент на паузе до конца дня (UTC).
 4. Максимальная просадка от пика: при превышении агент увольняется.
 5. Дневной лимит убытка компании: при превышении все позиции закрываются, торговля стоит до конца дня.
+6. Правила из базы знаний (предложены ревизором, одобрены владельцем): потолок деска в режиме, запрет входа
+   в определённые часы, запрет семейства в режиме, лимит сделок в день, множитель стопа, пауза после стопа.
 """
 from __future__ import annotations
 
@@ -25,11 +27,46 @@ class RiskVerdict:
     pause: bool = False
 
 
+RULE_TYPES = {
+    "desk_cap": "потолок доли деска в режиме рынка",
+    "no_entry_hours": "запрет новых входов в часы (UTC)",
+    "family_ban": "семейство вне рынка в режиме",
+    "max_trades_day": "не больше N сделок в день на трейдера",
+    "stop_mult": "стоп на расстоянии N·ATR",
+    "cooldown_min": "пауза после стопа, минут",
+}
+
+
 class RiskManager:
     def __init__(self, settings: Settings):
         self.s = settings
         self.dept_halted_day: str = ""
         self.desk_caps: dict[str, float] = {"bulls": 1.0, "bears": 1.0, "both": 1.0}   # потолки долей от директора
+        self.rules: list[dict] = []          # активные правила из базы знаний
+        self.rule_hits: list[int] = []       # id правил, сработавших на последней проверке
+
+    def set_rules(self, rules: list[dict]) -> None:
+        self.rules = [r for r in rules if isinstance(r.get("data"), dict) and r["data"].get("type") in RULE_TYPES]
+
+    def _rule_values(self, rtype: str) -> list[tuple[int, dict]]:
+        return [(r["id"], r["data"]) for r in self.rules if r["data"].get("type") == rtype]
+
+    @property
+    def stop_atr_mult(self) -> float:
+        vals = self._rule_values("stop_mult")
+        return float(vals[-1][1].get("value", self.s.stop_atr_mult)) if vals else self.s.stop_atr_mult
+
+    @property
+    def stop_cooldown_min(self) -> int:
+        vals = self._rule_values("cooldown_min")
+        return int(vals[-1][1].get("minutes", self.s.stop_cooldown_min)) if vals else self.s.stop_cooldown_min
+
+    def desk_cap(self, desk: str, regime: str | None = None) -> float:
+        cap = self.desk_caps.get(desk, 1.0)
+        for _rid, d in self._rule_values("desk_cap"):
+            if d.get("desk") == desk and (not d.get("regime") or d.get("regime") == regime):
+                cap = min(cap, float(d.get("cap", 1.0)))
+        return cap
 
     @property
     def policy_cap(self) -> float:
@@ -41,14 +78,14 @@ class RiskManager:
 
     def stop_distance(self, atr_pct: float) -> float:
         """Расстояние стопа от входа в долях цены. Не меньше 0.5%, не больше 10%."""
-        return min(0.10, max(0.005, self.s.stop_atr_mult * atr_pct))
+        return min(0.10, max(0.005, self.stop_atr_mult * atr_pct))
 
-    def size(self, desired: float, atr_pct: float, desk: str = "bulls") -> float:
+    def size(self, desired: float, atr_pct: float, desk: str = "bulls", regime: str | None = None) -> float:
         """Размер позиции со знаком: желание стратегии × доля, при которой потеря до стопа = risk_per_trade,
         и не больше потолка agent_max_exposure и потолка деска (по модулю; шорт отрицательный)."""
         dist = self.stop_distance(atr_pct)
         by_risk = self.s.risk_per_trade / dist if dist > 0 else 1.0
-        cap = min(self.s.agent_max_exposure, self.desk_caps.get(desk, 1.0))
+        cap = min(self.s.agent_max_exposure, self.desk_cap(desk, regime))
         mag = min(cap, abs(desired) * min(1.0, by_risk))
         return max(0.0, mag) * (1 if desired >= 0 else -1)
 
@@ -65,10 +102,37 @@ class RiskManager:
             return False, f"дневной убыток компании {((day_start-now)/day_start)*100:.2f}% ≥ лимита {self.s.dept_daily_loss_limit*100:.1f}%"
         return True, ""
 
-    def check_agent(self, agent: Agent, signal: Signal, price: float, atr_pct: float = 0.01) -> RiskVerdict:
+    def apply_rules(self, agent: Agent, target: float, ctx: dict) -> tuple[float, str | None]:
+        """Правила из базы знаний. Возвращает (новая цель, пояснение или None). Заполняет rule_hits."""
+        self.rule_hits = []
+        regime = ctx.get("regime")
+        hour = ctx.get("hour")
+        family = ctx.get("family", "")
+        current = float(ctx.get("exposure", 0.0))
+        note = None
+        for rid, d in self._rule_values("family_ban"):
+            if d.get("family") == family and (not d.get("regime") or d.get("regime") == regime) and abs(target) > 1e-9:
+                self.rule_hits.append(rid)
+                return 0.0, f"правило: семейство {family} вне рынка в режиме «{regime}»"
+        increasing = abs(target) > abs(current) + 1e-9
+        if increasing and hour is not None:
+            for rid, d in self._rule_values("no_entry_hours"):
+                if int(hour) in {int(h) for h in d.get("hours", [])} and (not d.get("desk") or d.get("desk") == agent.desk):
+                    self.rule_hits.append(rid)
+                    return current, f"правило: нет новых входов в {hour:02d}:00 UTC"
+        if increasing:
+            for rid, d in self._rule_values("max_trades_day"):
+                if int(ctx.get("trades_today", 0)) >= int(d.get("n", 99)):
+                    self.rule_hits.append(rid)
+                    return current, f"правило: не больше {d.get('n')} сделок в день"
+        return target, note
+
+    def check_agent(self, agent: Agent, signal: Signal, price: float, atr_pct: float = 0.01, ctx: dict | None = None) -> RiskVerdict:
+        ctx = ctx or {}
         eq = agent.equity(price)
         desired = signal.target_exposure if agent.account.allow_short else max(0.0, signal.target_exposure)
-        target = self.size(desired, atr_pct, agent.desk)
+        target = self.size(desired, atr_pct, agent.desk, ctx.get("regime"))
+        target, rule_note = self.apply_rules(agent, target, {**ctx, "exposure": agent.account.exposure(price), "family": agent.strategy.family})
         if agent.status == "fired":
             return RiskVerdict(False, 0.0, "агент уволен", fire=False)
         dd = agent.drawdown(price)
@@ -80,8 +144,10 @@ class RiskManager:
                 return RiskVerdict(False, 0.0, f"дневной убыток {day_loss*100:.2f}% ≥ лимита {self.s.agent_daily_loss_limit*100:.1f}%: пауза до конца дня", pause=True)
         if agent.status == "paused":
             return RiskVerdict(False, 0.0, "агент на паузе до конца дня")
+        if rule_note:
+            return RiskVerdict(True, target, rule_note)
         if abs(target - signal.target_exposure) > 1e-9:
-            pc = self.desk_caps.get(agent.desk, 1.0)
+            pc = self.desk_cap(agent.desk, ctx.get("regime"))
             if pc < min(1.0, self.s.agent_max_exposure) and abs(abs(target) - pc * min(1.0, abs(signal.target_exposure))) < 1e-9:
                 return RiskVerdict(True, target, f"потолок директора для деска {pc:.0%} по режиму рынка")
             return RiskVerdict(True, target, f"размер по риску: {target:.0%} (стоп {self.stop_distance(atr_pct)*100:.1f}%)")

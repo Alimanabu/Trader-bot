@@ -14,7 +14,7 @@ from .config import Settings
 from .journal import Journal
 from .llm import ClaudeClient, LLMUnavailable
 from .models import Candle
-from .research import StrategyLab, backtest
+from .research import StrategyLab
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +108,7 @@ class Learner:
                 text = (f"Из последних {len(mistakes)} ошибок {ups} — ожидание роста, которого не случилось. Не спеши со ставкой на рост."
                         if ups >= downs else
                         f"Из последних {len(mistakes)} ошибок {downs} — ожидание падения, которого не случилось. Не спеши со ставкой на падение.")
-            self.j.lesson(name, text, ts)
+            self.j.add_knowledge(ts, "lesson", name, text, "наставник аналитиков")
             self.j.event("lesson", f"{name}: {text}", name, ts=ts)
             n += 1
         return n
@@ -120,7 +120,7 @@ class Learner:
         for a in agents:
             if a.strategy.uses_llm() or a.status == "fired":
                 continue
-            current = backtest(a.strategy, hist, fee_rate=self.s.fee_rate)
+            current = self.lab.evaluate(a.strategy, hist)
             best = self.lab.best_params(a.strategy.family, hist)
             if best.params != a.strategy.params and best.score() > current.score() + 1.0:
                 old = dict(a.strategy.params)

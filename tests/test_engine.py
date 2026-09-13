@@ -400,3 +400,100 @@ def test_analytics_views_scoring_and_consensus(settings):
     st = j.analyst_stats()
     assert st["Технический аналитик"]["hits"] == 1 and st["Макро-стратег"]["hits"] == 0
     assert dept.stats()[0]["accuracy"] == 1.0
+
+
+def test_company_memory_grows_daily_and_shapes_director(settings):
+    settings.intern_count = 3
+    settings.memory_min_days = 2
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    # два дня подряд: итоги дня попадают в память семейств и десков под режим рынка
+    for k in (1, 2):
+        for a in eng.agents:
+            if a.status == "active" and a.desk == "bears":
+                a.account.cash -= 60          # медведи стабильно теряют
+        market.advance(24)
+        eng.tick(now=T + k * 86400)
+    mem = eng.j.memory_table("desk")
+    bears = [m for m in mem if m["key"] == "bears"]
+    assert bears and sum(m["days"] for m in bears) == 2 and all(m["avg"] < 0 for m in bears)
+    assert any(m["scope"] == "family" for m in eng.j.memory_table())
+    assert any(e["kind"] == "knowledge" for e in eng.j.recent_events(100))
+    # директор режет капитал деску, который в этом режиме теряет
+    regime = bears[0]["regime"]
+    caps = dict(eng.head.ALLOC["balanced"][regime])
+    notes = eng.head.memory_adjust(caps, regime)
+    assert notes and caps["bears"] < eng.head.ALLOC["balanced"][regime]["bears"]
+    # память переживает людей: семейство помнится независимо от имени агента
+    fam = next(a.strategy.family for a in eng.agents if a.desk == "bears" and a.status == "active")
+    assert eng.head.memory_bias(fam, regime) == -1
+
+
+def test_rule_approval_flows_into_risk_manager(settings):
+    settings.intern_count = 0
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    aid = eng.j.request_approval("rule", "Ревизор предлагает правило: нет новых входов в 03 UTC",
+                                 {"rule": {"type": "no_entry_hours", "hours": list(range(24)), "desk": ""}, "text": "нет новых входов", "rationale": "тест"}, ts=T)
+    eng.apply_approval(aid, True)
+    assert eng.j.active_rules() and eng.risk.rules
+    # правило действует: никто не может увеличить позицию, даже если стратегия требует входа
+    from trader.models import Action, Signal
+    for a in eng.agents:
+        a.account.flatten(eng.last_price, T, "тест")
+        a.last_target = 0.0
+    eng.agents[0].strategy.decide = lambda candles, ctx=None: Signal(Action.BUY, 1.0, 1.0, "тест: хочу купить")
+    res = eng.tick(now=T + 3600, force=True)
+    assert all(abs(a.account.btc) < 1e-9 for a in eng.agents)
+    assert any("правило" in d["reason"] for d in eng.j.recent_decisions(None, 200))
+    assert eng.j.active_rules()[0]["uses"] > 0
+    assert any(e["kind"] == "rule" for e in eng.j.recent_events(50))
+
+
+def test_proposal_approval_updates_knowledge(settings):
+    settings.intern_count = 0
+    eng, _ = make_engine(settings)
+    kid = eng.j.add_knowledge(1, "proposal", "product", "Добавить экран уведомлений", "Стратег развития", {"kind": "product"}, status="pending")
+    aid = eng.j.request_approval("proposal", "Стратег предлагает", {"knowledge_id": kid, "kind": "product"}, ts=1)
+    eng.apply_approval(aid, True)
+    assert eng.j.knowledge_by_id(kid)["status"] == "accepted"
+    kid2 = eng.j.add_knowledge(2, "proposal", "risk", "Снизить стоп", "Стратег развития", {"kind": "risk"}, status="pending")
+    aid2 = eng.j.request_approval("proposal", "Стратег предлагает", {"knowledge_id": kid2, "kind": "risk"}, ts=2)
+    eng.apply_approval(aid2, False)
+    assert eng.j.knowledge_by_id(kid2)["status"] == "rejected"
+    st = eng.state()["knowledge"]
+    assert st["counts"]["proposal"]["accepted"] == 1 and len(st["proposals"]) == 2
+
+
+def test_lesson_verification_retires_useless_lessons(settings):
+    from trader.analytics import AnalyticsDept
+    j = Journal(":memory:")
+    dept = AnalyticsDept(settings, j, ClaudeClient(None))
+    name = "Макро-стратег"
+    # до урока: 4 из 5 попаданий; после урока: 1 из 5
+    for i in range(5):
+        j.add_view(1000 + i * 3600, name, "up", 0.8, "x", 100.0)
+    j.score_views(101.0, 1000 + 5 * 3600 + 25 * 3600)
+    j._exec("UPDATE views SET hit=1"); j._exec("UPDATE views SET hit=0 WHERE id=1")
+    L = 1000 + 6 * 3600
+    kid = j.add_knowledge(L, "lesson", name, "не спеши со ставкой на рост", "наставник")
+    for i in range(5):
+        j.add_view(L + 100 + i * 3600, name, "up", 0.8, "y", 100.0)
+    j.score_views(99.0, L + 100 + 5 * 3600 + 25 * 3600)
+    res = dept.verify_lessons(L + 100 + 5 * 3600 + 26 * 3600)
+    assert res and not res[0]["kept"] and j.knowledge_by_id(kid)["status"] == "retired"
+    assert dept.lessons_for(name) == []
+
+
+def test_walk_forward_scores_out_of_sample(candles):
+    from trader.research import StrategyLab, walk_forward
+    from trader.agents.registry import build_strategy
+    r = walk_forward(build_strategy("sma_cross"), candles)
+    assert r.oos_return_pct is not None and r.score() <= r.train_score()
+    lab = StrategyLab(max_combos=3)
+    best = lab.best_params("breakout", candles[-300:])
+    assert best.oos_score() is not None

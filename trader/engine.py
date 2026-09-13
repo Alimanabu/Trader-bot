@@ -205,7 +205,7 @@ class Engine:
                     self.j.event("liquidation", f"{a.name}: позиция ликвидирована биржей", a.name, ts=now_i)
                 a.stop_price = 0.0
                 a.last_target = 0.0
-                a.next_check_ts = max(a.next_check_ts, now_i + self.s.stop_cooldown_min * 60)
+                a.next_check_ts = max(a.next_check_ts, now_i + self.risk.stop_cooldown_min * 60)
                 out.append(a.name)
         return out
 
@@ -227,7 +227,7 @@ class Engine:
                     hit.append(a.name)
                 a.stop_price = 0.0
                 a.last_target = 0.0
-                a.next_check_ts = max(a.next_check_ts, now_i + self.s.stop_cooldown_min * 60)
+                a.next_check_ts = max(a.next_check_ts, now_i + self.risk.stop_cooldown_min * 60)
         return hit
 
     def _view(self, candles: list[Candle], price: float, now_i: int) -> list[Candle]:
@@ -281,12 +281,24 @@ class Engine:
         alive = [a for a in self.agents if a.status not in {"fired", "dropped"}]
         wk = self.director.week_key(now_i)
         new_week = self.j.kv_get("week_key") != wk
+        day_results: list[tuple[Agent, float]] = []     # итоги вчерашнего дня для памяти компании
         for a in alive:
             a.last_ts_seen = now_i
             if a.hired_at > now_i:
                 a.hired_at = now_i
+            if a.day_key and a.day_key != dk and a.day_start_equity > 0:
+                day_results.append((a, (a.equity(price) - a.day_start_equity) / a.day_start_equity * 100))
             a.roll_day(dk, price)
             a.observe(price)
+        if day_results:
+            yesterday = datetime.fromtimestamp(now_i - 86400, tz=timezone.utc).strftime("%Y-%m-%d")
+            regime_y = self.director.regime_for_day(yesterday)
+            n = self.director.remember_day(day_results, regime_y, now_i)
+            kc = self.j.knowledge_counts()
+            self.j.event("knowledge", f"База знаний: память пополнена итогами {n} трейдеров и стажёров за {yesterday} (режим: "
+                                      f"{ {'up': 'рост', 'flat': 'боковик', 'down': 'падение'}.get(regime_y, regime_y)}); "
+                                      f"правил действует {kc.get('rule', {}).get('active', 0)}, уроков {kc.get('lesson', {}).get('active', 0) + kc.get('lesson', {}).get('verified', 0)}, "
+                                      f"наблюдений стратега {kc.get('insight', {}).get('active', 0)}", None, ts=now_i)
         if new_week:
             if self.j.kv_get("week_key"):        # не при самом первом запуске
                 summary["weekly"] = self.director.weekly_review(self.agents, price, now_i, candles)
@@ -324,6 +336,8 @@ class Engine:
             self.director.daily_policy(candles, now_i, self.analytics.consensus(now_i))
         pol = self.director.policy()
         self.risk.desk_caps = {k: float(v) for k, v in (pol.get("caps") or {}).items()} or {"bulls": 1.0, "bears": 1.0, "both": 1.0}
+        self.risk.set_rules(self.j.active_rules())
+        self.regime = pol.get("regime", "flat")
         for a in alive:
             a.account.min_rebalance_frac = float(pol.get("min_rebalance", 0.05))
         atr_pct = self._atr_pct(candles)
@@ -350,6 +364,23 @@ class Engine:
             self._apply_funding(alive, price, last.ts)
             self.learner.after_tick(self.agents, candles)
             self.director.review(self.agents, price, now_i)     # ежедневный разбор до найма: освободившиеся места займут сразу
+            if self.j.kv_get("verify_day") != dk:
+                self.j.kv_set("verify_day", dk)
+                try:
+                    self.analytics.verify_lessons(now_i)
+                except Exception as e:  # noqa: BLE001
+                    log.exception("проверка уроков: %s", e)
+            if summary.get("weekly") is not None:
+                try:
+                    self.analytics.weekly_rule_proposal(self._worst_trades(now_i), now_i)
+                except Exception as e:  # noqa: BLE001
+                    log.exception("ревизор: %s", e)
+            if self.analytics.strategist_due(now_i):
+                try:
+                    self.analytics.run_strategist(candles, price, now_i,
+                                                  self.director.company_summary(self.agents, price, self.analytics.stats(), now_i))
+                except Exception as e:  # noqa: BLE001
+                    log.exception("стратег развития: %s", e)
         hired = self.director.hire_if_needed(self.agents, candles, now_i)
         new_interns = self.director.fill_interns(self.agents, candles, now_i)
         for h in hired + new_interns:
@@ -415,7 +446,12 @@ class Engine:
             from .agents.base import hold
             sig = hold(f"ошибка стратегии: {e}", ctx["exposure"])
         a.last_signal = sig
-        verdict = self.risk.check_agent(a, sig, price, atr_pct)
+        day_start_ts = ts - ts % 86400
+        rctx = {"hour": datetime.fromtimestamp(ts, tz=timezone.utc).hour, "regime": getattr(self, "regime", "flat"),
+                "trades_today": sum(1 for t in a.account.trades if t.ts >= day_start_ts)}
+        verdict = self.risk.check_agent(a, sig, price, atr_pct, rctx)
+        for rid in self.risk.rule_hits:
+            self.j.knowledge_hit(rid)
         executed = False
         blocked = None
         trade = None
@@ -440,9 +476,10 @@ class Engine:
             blocked = verdict.reason
         eq = a.equity(price)
         reason = sig.reason
-        if verdict.allowed and abs(verdict.target_exposure - sig.target_exposure) > 1e-9 and sig.target_exposure > 0:
+        rule_block = verdict.reason.startswith("правило")
+        if verdict.allowed and (rule_block or (abs(verdict.target_exposure - sig.target_exposure) > 1e-9 and abs(sig.target_exposure) > 0)):
             reason = f"{sig.reason} · {verdict.reason}"
-        if blocked or self._should_log(a, sig, trade, ts):
+        if blocked or rule_block or self._should_log(a, sig, trade, ts):
             self.j.decision(ts, a.name, a.strategy.family, sig.action.value, sig.target_exposure, sig.confidence,
                             reason, price, eq, executed, blocked, trade=trade, exposure_before=exp_before)
             if a.status != "fired":
@@ -533,7 +570,7 @@ class Engine:
             "last_poll_ts": self.last_poll_ts,
             "max_exposure": self.s.agent_max_exposure,
             "risk_per_trade": self.s.risk_per_trade,
-            "head": pol,
+            "head": {**pol, "senior_weeks": self.s.senior_weeks, "strategist_interval_h": self.s.strategist_interval_h},
             "analysts": self.analytics.stats(),
             "consensus": self.analytics.consensus(now_i),
             "funding_rate": self.j.kv_get("funding_rate", None),
@@ -556,6 +593,35 @@ class Engine:
                 "week": {"lessons": ev7.get("lesson", 0), "retunes": ev7.get("retune", 0)},
                 "events": self.j.events_of(("lesson", "retune"), 12),
             },
+            "knowledge": self.knowledge_state(),
+        }
+
+    def _worst_trades(self, now_i: int, limit: int = 12) -> list[dict]:
+        """Худшие закрытые сделки за неделю с контекстом для ревизора."""
+        meta = {a.name: (a.desk, a.strategy.family) for a in self.agents}
+        out = []
+        for t in self.j.trades_since(now_i - 7 * 86400, 2000):
+            if t.get("pnl") is None or t["pnl"] >= 0:
+                continue
+            desk, fam = meta.get(t["agent"], ("bulls", "?"))
+            day = datetime.fromtimestamp(t["ts"], tz=timezone.utc).strftime("%Y-%m-%d")
+            out.append({"agent": t["agent"], "desk": desk, "family": fam, "hour": datetime.fromtimestamp(t["ts"], tz=timezone.utc).hour,
+                        "regime": self.director.regime_for_day(day), "pnl": float(t["pnl"]), "reason": t.get("reason") or ""})
+        out.sort(key=lambda x: x["pnl"])
+        return out[:limit]
+
+    def knowledge_state(self) -> dict:
+        kc = self.j.knowledge_counts()
+        return {
+            "counts": kc,
+            "memory": self.j.memory_table("desk"),
+            "families": [m for m in self.j.memory_table("family") if m["days"] >= 3],
+            "rules": self.j.active_rules(),
+            "lessons": self.j.knowledge("lesson", None, limit=10),
+            "insights": self.j.knowledge("insight", "active", limit=8),
+            "proposals": self.j.knowledge("proposal", None, limit=12),
+            "staff": self.analytics.staff(),
+            "memory_min_days": self.s.memory_min_days,
         }
 
     def _trades_24h(self, now_i: int) -> list[dict]:
@@ -573,6 +639,8 @@ class Engine:
         if not r:
             return None
         if not approve:
+            if r["kind"] == "proposal" and r["details"].get("knowledge_id"):
+                self.j.set_knowledge_status(int(r["details"]["knowledge_id"]), "rejected")
             self.j.event("approval", f"Отклонено: {r['title']}")
             return r
         price = self.last_price
@@ -593,6 +661,12 @@ class Engine:
                     a = self.director._create(cand["strategy"], cand["params"], self.agents, ts, "active")
                     self.j.event("hire", f"Нанят {a.name}", a.name, ts=ts)
                     self.agents.append(a)
+        elif r["kind"] == "rule":
+            self.director.approve_rule(r["details"], ts)
+            self.risk.set_rules(self.j.active_rules())
+        elif r["kind"] == "proposal":
+            if r["details"].get("knowledge_id"):
+                self.j.set_knowledge_status(int(r["details"]["knowledge_id"]), "accepted", ts)
         elif r["kind"] == "live":
             for a in self.agents:
                 if a.name == r["details"].get("agent") and is_team(a):

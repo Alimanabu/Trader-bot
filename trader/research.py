@@ -1,4 +1,9 @@
-"""Отдел исследований: бэктест стратегий на истории и подбор кандидатов на скамейку запасных."""
+"""Отдел исследований: бэктест стратегий на истории и подбор кандидатов на скамейку запасных.
+
+Проверка на невиденных данных (walk-forward): история делится на две части. Первые две трети
+используются для подбора параметров, последняя треть для проверки. Итоговая оценка кандидата
+это худшая из двух, поэтому случайные совпадения с прошлым отбрасываются.
+"""
 from __future__ import annotations
 
 import itertools
@@ -22,10 +27,28 @@ class BacktestResult:
     sharpe: float
     trades: int
     bars: int
+    oos_return_pct: float | None = None     # результат на проверочном (невиденном) участке
+    oos_drawdown_pct: float | None = None
+    oos_sharpe: float | None = None
+    oos_trades: int = 0
+
+    @staticmethod
+    def _score(ret: float, dd: float, sharpe: float) -> float:
+        return ret - 0.5 * dd + 2.0 * sharpe
+
+    def train_score(self) -> float:
+        return self._score(self.return_pct, self.max_drawdown_pct, self.sharpe)
+
+    def oos_score(self) -> float | None:
+        if self.oos_return_pct is None:
+            return None
+        return self._score(self.oos_return_pct, self.oos_drawdown_pct or 0.0, self.oos_sharpe or 0.0)
 
     def score(self) -> float:
-        """Единая оценка: доходность с штрафом за просадку и бонусом за стабильность."""
-        return self.return_pct - 0.5 * self.max_drawdown_pct + 2.0 * self.sharpe
+        """Единая оценка: доходность с штрафом за просадку и бонусом за стабильность.
+        Если есть проверочный участок, берётся худшая из двух оценок."""
+        oos = self.oos_score()
+        return self.train_score() if oos is None else min(self.train_score(), oos)
 
 
 def backtest(strategy: Strategy, candles: list[Candle], start_balance: float = 1000.0,
@@ -89,13 +112,32 @@ def _valid(family: str, p: dict) -> bool:
     return True
 
 
+def walk_forward(strategy: Strategy, candles: list[Candle], fee_rate: float = 0.001, split: float = 0.67) -> BacktestResult:
+    """Подбор на первых split истории, проверка на остатке. Если истории мало, обычный бэктест."""
+    warm = max(strategy.warmup(), 2)
+    n = len(candles)
+    cut = int(n * split)
+    if n - cut < warm + 48 or cut < warm + 48:
+        return backtest(strategy, candles, fee_rate=fee_rate)
+    train = backtest(strategy, candles[:cut], fee_rate=fee_rate)
+    # проверочный участок видит хвост истории для разогрева индикаторов, но сделки считаются только на нём
+    test = backtest(strategy, candles[max(0, cut - warm - 5):], fee_rate=fee_rate)
+    train.oos_return_pct, train.oos_drawdown_pct = test.return_pct, test.max_drawdown_pct
+    train.oos_sharpe, train.oos_trades = test.sharpe, test.trades
+    return train
+
+
 class StrategyLab:
     """Перебирает семейства и параметры, возвращает лучших кандидатов."""
 
-    def __init__(self, fee_rate: float = 0.001, max_combos: int = 12, max_per_family: int = 2):
+    def __init__(self, fee_rate: float = 0.001, max_combos: int = 12, max_per_family: int = 2, walk_forward: bool = True):
         self.fee_rate = fee_rate
         self.max_combos = max_combos
         self.max_per_family = max_per_family
+        self.walk_forward = walk_forward
+
+    def evaluate(self, strategy: Strategy, candles: list[Candle]) -> BacktestResult:
+        return walk_forward(strategy, candles, self.fee_rate) if self.walk_forward else backtest(strategy, candles, fee_rate=self.fee_rate)
 
     def research(self, candles: list[Candle], families: list[str] | None = None, top_n: int = 5,
                  exclude: set[str] | None = None) -> list[BacktestResult]:
@@ -107,7 +149,7 @@ class StrategyLab:
                 if exclude and combo_key(fam, params) in exclude:
                     continue
                 strat = build_strategy(fam, params)
-                results.append(backtest(strat, candles, fee_rate=self.fee_rate))
+                results.append(self.evaluate(strat, candles))
         results.sort(key=lambda r: r.score(), reverse=True)
         # разнообразие: не больше max_per_family кандидатов одного семейства
         picked: list[BacktestResult] = []
@@ -127,7 +169,7 @@ class StrategyLab:
     def best_params(self, family: str, candles: list[Candle]) -> BacktestResult:
         best: BacktestResult | None = None
         for params in grid(family, self.max_combos):
-            r = backtest(build_strategy(family, params), candles, fee_rate=self.fee_rate)
+            r = self.evaluate(build_strategy(family, params), candles)
             if best is None or r.score() > best.score():
                 best = r
         assert best is not None
@@ -142,4 +184,7 @@ def combo_key(family: str, params: dict) -> str:
 def result_to_dict(r: BacktestResult) -> dict:
     d = asdict(r)
     d["score"] = round(r.score(), 3)
+    d["train_score"] = round(r.train_score(), 3)
+    oos = r.oos_score()
+    d["oos_score"] = None if oos is None else round(oos, 3)
     return d

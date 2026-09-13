@@ -9,6 +9,9 @@
 - Директор раз в день оценивает режим рынка (свои правила плюс голоса аналитического отдела) и
   выставляет потолок доли для каждого деска. Раз в неделю его распределение сравнивается с равным
   («если бы всем дали 100%»), а компания с «держать доллары» и «держать биткоин».
+- База знаний компании: каждый день результат каждого трейдера и стажёра записывается в память его
+  семейства и деска под текущий режим рынка. Память живёт дольше людей: директор режет капитал деску,
+  который исторически теряет в текущем режиме, и при найме предпочитает семейства с хорошей памятью.
 """
 from __future__ import annotations
 
@@ -135,17 +138,98 @@ class Director:
         rule = self.assess_regime(candles)
         regime, source = self.combine(rule, consensus)
         caps = dict(self.ALLOC[pol["mode"]][regime])
+        memory_adj = self.memory_adjust(caps, regime)
         if regime != pol.get("regime") or caps != pol.get("caps"):
             desc = ", ".join(f"{DESKS[k]['label'].lower()} {caps[k]:.0%}" for k in DESK_KEYS)
+            mem = ("; память компании: " + ", ".join(memory_adj)) if memory_adj else ""
             self.j.event("head", f"Директор: рынок — {REGIME_RU[regime]} (источник: {source}). Капитал по дескам: {desc} "
-                                 f"(подход: {'обычный' if pol['mode'] == 'balanced' else 'защитный'})", None,
-                         {"regime": regime, "rule_regime": rule, "caps": caps, "mode": pol["mode"], "source": source}, ts=ts)
-        pol.update({"regime": regime, "rule_regime": rule, "caps": caps, "changed_ts": ts, "source": source,
+                                 f"(подход: {'обычный' if pol['mode'] == 'balanced' else 'защитный'}){mem}", None,
+                         {"regime": regime, "rule_regime": rule, "caps": caps, "mode": pol["mode"], "source": source, "memory": memory_adj}, ts=ts)
+        pol.update({"regime": regime, "rule_regime": rule, "caps": caps, "changed_ts": ts, "source": source, "memory_adj": memory_adj,
                     "analysts": {k: consensus[k] for k in ("regime", "strength", "votes")} if consensus else None})
+        self.record_regime_day(regime, ts)
         if not pol.get("week_caps"):
             pol["week_caps"] = dict(caps)
         self._save_policy(pol)
         return pol
+
+    # --- база знаний: память по режимам ---
+    def record_regime_day(self, regime: str, ts: int) -> None:
+        day = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        logd = self.j.kv_get("regime_log", {}) or {}
+        logd[day] = regime
+        if len(logd) > 90:
+            for k in sorted(logd)[:-90]:
+                logd.pop(k, None)
+        self.j.kv_set("regime_log", logd)
+
+    def regime_for_day(self, day: str) -> str:
+        logd = self.j.kv_get("regime_log", {}) or {}
+        if day in logd:
+            return logd[day]
+        return self.policy().get("regime", "flat")
+
+    def remember_day(self, results: list[tuple[Agent, float]], regime: str, ts: int) -> int:
+        """Итог дня каждого трейдера и стажёра (в % от капитала на утро) → память семейства и деска."""
+        n = 0
+        desk_sum: dict[str, list[float]] = {}
+        for a, pct in results:
+            self.j.memory_add("family", a.strategy.family, regime, pct, ts)
+            desk_sum.setdefault(a.desk, []).append(pct)
+            n += 1
+        for d, vals in desk_sum.items():
+            self.j.memory_add("desk", d, regime, sum(vals) / len(vals), ts)
+        return n
+
+    def memory_bias(self, family: str, regime: str) -> int:
+        """+1 семейство исторически зарабатывает в этом режиме, −1 теряет, 0 данных мало."""
+        m = self.j.memory_get("family", family, regime)
+        if not m or m["days"] < self.s.memory_min_days:
+            return 0
+        return 1 if m["avg"] > 0 else -1
+
+    def memory_adjust(self, caps: dict[str, float], regime: str) -> list[str]:
+        """Деск, который в этом режиме исторически теряет, получает на 30% меньше; стабильно зарабатывающий — до полного."""
+        notes = []
+        for d in DESK_KEYS:
+            m = self.j.memory_get("desk", d, regime)
+            if not m or m["days"] < self.s.memory_min_days:
+                continue
+            if m["avg"] < 0 and m["losses"] >= m["wins"]:
+                caps[d] = round(caps[d] * 0.7, 2)
+                notes.append(f"{DESKS[d]['label'].lower()} в этом режиме теряли {m['days']} дн. из памяти (в среднем {m['avg']:+.2f}%/день), потолок урезан до {caps[d]:.0%}")
+            elif m["avg"] > 0.1 and m["wins"] > m["losses"] and caps[d] < 1.0:
+                caps[d] = round(min(1.0, caps[d] + 0.2), 2)
+                notes.append(f"{DESKS[d]['label'].lower()} в этом режиме стабильно в плюсе ({m['avg']:+.2f}%/день за {m['days']} дн.), потолок поднят до {caps[d]:.0%}")
+        return notes
+
+    def company_summary(self, agents: list[Agent], price: float, analysts: list[dict], ts: int) -> str:
+        """Сводка для стратега развития: дески, память, аналитики, правила."""
+        pol = self.policy()
+        lines = [f"Режим рынка сейчас: {REGIME_RU.get(pol.get('regime'), '?')}, подход {pol.get('mode')}, потолки {pol.get('caps')}."]
+        for w in (pol.get("weeks") or [])[-4:]:
+            lines.append(f"Неделя {datetime.fromtimestamp(w['ts'], tz=timezone.utc):%d.%m}: компания {w['dept']:+.2f}%, равное распределение {w.get('equal', 0):+.2f}%, "
+                         f"биткоин {w['btc']:+.2f}%, дески " + ", ".join(f"{k} {v['pct']:+.2f}%" for k, v in (w.get("desks") or {}).items()))
+        for d in DESK_KEYS:
+            members = self.desk_members(agents, d)
+            best = max(members, key=lambda a: a.pnl_total(price), default=None)
+            worst = min(members, key=lambda a: a.pnl_total(price), default=None)
+            lines.append(f"Деск {DESKS[d]['label']}: {len(members)} трейдеров, суммарно {sum(a.pnl_total(price) for a in members):+.2f} $"
+                         + (f", лучший {best.name} ({best.strategy.family}) {best.pnl_total(price):+.2f} $, худший {worst.name} ({worst.strategy.family}) {worst.pnl_total(price):+.2f} $" if best else ""))
+        mem = [m for m in self.j.memory_table("family") if m["days"] >= 5]
+        mem.sort(key=lambda m: m["avg"], reverse=True)
+        if mem:
+            lines.append("Память по режимам (семейство/режим: средний % в день, дней): " +
+                         "; ".join(f"{m['key']}/{m['regime']} {m['avg']:+.2f}% ({m['days']})" for m in mem[:8] + mem[-4:]))
+        for a in analysts:
+            acc = a.get("accuracy")
+            lines.append(f"Аналитик {a['name']}: точность {'—' if acc is None else f'{acc:.0%}'} на {a.get('scored', 0)} взглядах")
+        rules = self.j.active_rules()
+        lines.append("Действующие правила: " + ("; ".join(r["text"] for r in rules) if rules else "нет"))
+        ev = self.j.event_counts(ts - 7 * 86400)
+        lines.append(f"За неделю: стопов {ev.get('stop', 0)}, ликвидаций {ev.get('liquidation', 0)}, увольнений {ev.get('fire', 0)}, "
+                     f"отчислений стажёров {ev.get('drop', 0)}, повышений {ev.get('hire', 0)}")
+        return "\n".join(lines)
 
     def desk_members(self, agents: list[Agent], desk: str, interns: bool = False) -> list[Agent]:
         return [a for a in agents if a.desk == desk and (is_intern(a) if interns else is_team(a))]
@@ -339,7 +423,9 @@ class Director:
         seasoned = [a for a in pool if self._days(a) >= min_days]
         if not seasoned:
             return None
-        return max(seasoned, key=lambda a: a.pnl_total(price))
+        regime = self.policy().get("regime", "flat")
+        # предпочтение семействам, которые по памяти компании зарабатывают в текущем режиме
+        return max(seasoned, key=lambda a: (self.memory_bias(a.strategy.family, regime), a.pnl_total(price)))
 
     def _days(self, a: Agent) -> float:
         return max(0.0, (a.last_ts_seen - a.hired_at) / 86400) if getattr(a, "last_ts_seen", 0) else 0.0
@@ -514,6 +600,14 @@ class Director:
                                f"старших трейдеров +{len(res['senior'])}, отчислено {len(res['dropped'])}, "
                                f"кандидатов на реальный счёт {len(res['live_ready'])}", None, res, ts=ts)
         return res
+
+    def approve_rule(self, details: dict, ts: int) -> int:
+        data = details.get("rule") or {}
+        text = details.get("text") or str(data)
+        kid = self.j.add_knowledge(ts, "rule", data.get("type", "rule"), text, "ревизор, одобрено владельцем",
+                                   {**data, "rationale": details.get("rationale", "")})
+        self.j.event("rule", f"Новое правило риск-менеджера: {text}", None, {"id": kid}, ts=ts)
+        return kid
 
     def approve_live(self, a: Agent, ts: int) -> None:
         a.rank = RANK_LIVE

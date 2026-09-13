@@ -13,7 +13,7 @@
   const RANK = ["Стажёр", "Трейдер", "Старший трейдер", "Реальный счёт"];
   const DESK = { bulls: "Быки", bears: "Медведи", both: "Двусторонние" };
   const REG = { up: "рост", flat: "боковик", down: "падение", off: "выключено" };
-  const KIND = { fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", stop: "стоп-лосс", demote: "в стажёры", weekly: "ротация", live_ready: "к реальным торгам", head: "директор", rank: "звание", analytics: "аналитика", funding: "финансирование", liquidation: "ликвидация", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
+  const KIND = { knowledge: "база знаний", rule: "правило", reviser: "ревизор", strategist: "стратег", fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", stop: "стоп-лосс", demote: "в стажёры", weekly: "ротация", live_ready: "к реальным торгам", head: "директор", rank: "звание", analytics: "аналитика", funding: "финансирование", liquidation: "ликвидация", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
   function tradeCell(x) {
     if (x.trade_side) return `<span class="${x.trade_side === "BUY" ? "up" : "down"}">${x.trade_side === "BUY" ? "купил" : "продал"} ${fmt(x.trade_qty, 5)} BTC</span>`;
     if (!x.executed) return `<span class="warn">${esc(x.blocked_by || "заблокировано")}</span>`;
@@ -285,10 +285,10 @@
         <div><div class="k">За неделю в стажёры</div><div class="v num">${sc.week?.interns ?? 0}</div></div>
         <div><div class="k">За неделю в трейдеры · отчислено</div><div class="v num">${sc.week?.promoted ?? 0} · ${sc.week?.dropped ?? 0}</div></div>
       </div>
-      <div class="note" style="margin-top:8px">Перебирает семейства и параметры на реальной истории за 30 дней, для каждого деска отдельно (спот, шорт, обе стороны), и кладёт лучших на скамейку кандидатов. Оттуда набираются стажёры. Раз в неделю перепроверяет параметры трейдеров.</div>
+      <div class="note" style="margin-top:8px">Перебирает семейства и параметры на реальной истории за 30 дней, для каждого деска отдельно (спот, шорт, обе стороны). Первые две трети истории идут на подбор, последняя треть на проверку: оценка кандидата это худшая из двух, так отсеиваются случайные совпадения. Лучшие идут на скамейку кандидатов, оттуда набираются стажёры. Раз в неделю перепроверяет параметры трейдеров.</div>
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="btn-research">Запустить исследование</button><button class="btn" id="btn-library">${showLibrary ? "Скрыть библиотеку" : `Библиотека стратегий · ${fam.length}`}</button></div>
-      ${bench.length ? `<h3 style="margin-top:14px">Кандидаты (лучшие по бэктесту)</h3><div class="tbl"><table><tr><th>Семейство</th><th>Параметры</th><th class="r">Доход</th><th class="r">Просадка</th><th class="r">Оценка</th></tr>` +
-        bench.map((b) => `<tr><td>${esc(b.strategy)}</td><td>${Object.entries(b.params).map(([k, v]) => `<span class="tag">${k}=${v}</span>`).join("")}</td><td class="r num ${cls(b.stats.return_pct)}">${sign(b.stats.return_pct, 1)}%</td><td class="r num">${fmt(b.stats.max_drawdown_pct, 1)}%</td><td class="r num">${fmt(b.score, 1)}</td></tr>`).join("") + "</table></div>" : ""}
+      ${bench.length ? `<h3 style="margin-top:14px">Кандидаты (лучшие по бэктесту)</h3><div class="tbl"><table><tr><th>Семейство</th><th>Параметры</th><th class="r">Подбор</th><th class="r">Проверка</th><th class="r">Оценка</th></tr>` +
+        bench.map((b) => `<tr><td>${esc(b.strategy)}</td><td>${Object.entries(b.params).map(([k, v]) => `<span class="tag">${k}=${v}</span>`).join("")}</td><td class="r num ${cls(b.stats.return_pct)}">${sign(b.stats.return_pct, 1)}%</td><td class="r num ${cls(b.stats.oos_return_pct)}">${b.stats.oos_return_pct == null ? "—" : sign(b.stats.oos_return_pct, 1) + "%"}</td><td class="r num">${fmt(b.score, 1)}</td></tr>`).join("") + "</table></div>" : ""}
       ${showLibrary ? `<div class="tbl" style="margin-top:10px"><table>${fam.map((f) => `<tr><td><b>${esc(f.label)}</b>${f.side === "short" ? ' <span class="pill desk-bears">медведи</span>' : f.side === "both" ? ' <span class="pill desk-both">двусторонние</span>' : ' <span class="pill desk-bulls">быки</span>'}<div class="note">${esc(f.description)}</div></td></tr>`).join("")}</table></div>` : ""}</div>`;
   }
   function learningHTML(s) {
@@ -297,11 +297,43 @@
         <div><div class="k">Уроков за неделю</div><div class="v num">${l.week?.lessons ?? 0}</div></div>
         <div><div class="k">Переобучений за неделю</div><div class="v num">${l.week?.retunes ?? 0}</div></div>
       </div>
-      <div class="note" style="margin-top:8px">Каждому решению через 4 часа проставляется результат. Аналитики получают уроки из взглядов, которые не подтвердились. Параметры трейдеров раз в неделю перепроверяются на свежей истории, трейдер после понижения переобучается перед стажировкой.</div>
+      <div class="note" style="margin-top:8px">Каждому решению через 4 часа проставляется результат. Аналитики получают уроки из взглядов, которые не подтвердились; урок проверяется по точности до и после и уходит в архив, если не помог. Параметры трейдеров раз в неделю перепроверяются на свежей истории с проверкой на невиденных данных, трейдер после понижения переобучается перед стажировкой.</div>
       <ul class="events" style="margin-top:8px">${eventsHTML(l.events || []) || '<li class="muted">пока пусто</li>'}</ul></div>`;
   }
+  function knowledgeHTML(s) {
+    const k = s.knowledge || { counts: {}, memory: [], families: [], rules: [], lessons: [], insights: [], proposals: [], staff: {} };
+    const c = k.counts || {};
+    const cnt = (kind, st) => (c[kind] || {})[st] || 0;
+    const PK = { strategy: "стратегия", risk: "риск", product: "приложение" };
+    const PS = { pending: "ждёт решения", accepted: "принято", rejected: "отклонено", done: "сделано" };
+    const memRow = (d) => ["up", "flat", "down"].map((r) => { const m = k.memory.find((x) => x.key === d && x.regime === r); return `<td class="r num ${m ? cls(m.avg) : ""}">${m ? `${sign(m.avg, 2)}%<div class="dim">${m.days} дн.</div>` : "—"}</td>`; }).join("");
+    const fams = [...k.families].sort((a, b) => b.avg - a.avg);
+    const top = fams.slice(0, 4), bottom = fams.slice(-3).reverse();
+    const famLine = (m) => `<li><span class="pill desk-${/_short$/.test(m.key) ? "bears" : /_both$/.test(m.key) ? "both" : "bulls"}">${esc(m.key)}</span> в режиме «${REG[m.regime]}»: <b class="num ${cls(m.avg)}">${sign(m.avg, 2)}%</b> в день, ${m.days} дн.</li>`;
+    return `<div class="card"><h3>База знаний компании</h3>
+      <div class="stat">
+        <div><div class="k">Дней в памяти</div><div class="v num">${k.memory.reduce((x, m) => x + m.days, 0) / 3 | 0}</div></div>
+        <div><div class="k">Правил действует</div><div class="v num">${cnt("rule", "active")}</div></div>
+        <div><div class="k">Уроков</div><div class="v num">${cnt("lesson", "active") + cnt("lesson", "verified")} <span class="muted" style="font-size:12px">в архиве ${cnt("lesson", "retired")}</span></div></div>
+        <div><div class="k">Наблюдений стратега</div><div class="v num">${cnt("insight", "active")}</div></div>
+        <div><div class="k">Предложений принято</div><div class="v num">${cnt("proposal", "accepted") + cnt("proposal", "done")} <span class="muted" style="font-size:12px">ждут ${cnt("proposal", "pending")}</span></div></div>
+      </div>
+      <div class="note" style="margin-top:8px">Знания принадлежат компании, а не людям. Каждый день итог каждого трейдера и стажёра записывается в память его семейства стратегий и деска под текущий режим рынка. Новый стажёр того же семейства наследует эту память, директор режет капитал дескам, которые в текущем режиме исторически теряют (после ${k.memory_min_days || 10} дней данных), и при найме предпочитает семейства с хорошей памятью.</div>
+      <h3 style="margin-top:14px">Память десков по режимам · средний результат в день</h3>
+      <div class="tbl"><table><tr><th>Деск</th><th class="r">Рост</th><th class="r">Боковик</th><th class="r">Падение</th></tr>
+        ${["bulls", "bears", "both"].map((d) => `<tr><td>${DESK[d]}</td>${memRow(d)}</tr>`).join("")}</table></div>
+      ${fams.length ? `<h3 style="margin-top:14px">Память семейств</h3><ul class="kb">${top.map(famLine).join("")}${bottom.length && fams.length > 4 ? `<li class="dim">…</li>${bottom.map(famLine).join("")}` : ""}</ul>` : ""}
+      <h3 style="margin-top:14px">Правила риск-менеджера из опыта</h3>
+      ${k.rules.length ? `<ul class="kb">${k.rules.map((r) => `<li><b>${esc(r.text)}</b><div class="note">${esc(r.data?.rationale || "")} · сработало ${r.uses} раз · ${date(r.ts)} <button class="btn mini kb-status" data-id="${r.id}" data-st="retired">убрать</button></div></li>`).join("")}</ul>` : '<div class="note">Пока нет. Ревизор предлагает правило по итогам недели, если видит повторяющуюся причину потерь; правило начинает действовать после вашего одобрения.</div>'}
+      <h3 style="margin-top:14px">Наблюдения стратега развития</h3>
+      ${k.insights.length ? `<ul class="kb">${k.insights.map((r) => `<li>${esc(r.text)}<div class="note">${time(r.ts)}</div></li>`).join("")}</ul>` : `<div class="note">${s.llm ? `Стратег смотрит на рынок и статистику компании раз в ${Math.round((s.head?.strategist_interval_h || 72) / 24)} дня; следующий раз ${k.staff?.strategist_next ? time(k.staff.strategist_next) : "скоро"}.` : "Стратег развития работает на нейросети: нужен ключ Claude API."}</div>`}
+      <h3 style="margin-top:14px">Предложения по развитию</h3>
+      ${k.proposals.length ? `<ul class="kb">${k.proposals.map((r) => `<li><span class="pill">${PK[r.topic] || r.topic}</span> <span class="pill ${r.status === "accepted" || r.status === "done" ? "green" : r.status === "rejected" ? "" : "gold"}">${PS[r.status] || r.status}</span> <b>${esc(r.data?.title || "")}</b><div class="note">${esc(r.data?.details || r.text)}${r.data?.expected_effect ? `<br>Ожидаемый эффект: ${esc(r.data.expected_effect)}` : ""}${r.status === "accepted" ? ` <button class="btn mini kb-status" data-id="${r.id}" data-st="done">сделано</button>` : ""}</div></li>`).join("")}</ul>` : '<div class="note">Принятые предложения копятся здесь как план развития: что менять в стратегиях, риске и самом приложении.</div>'}
+      ${k.lessons.length ? `<h3 style="margin-top:14px">Уроки аналитикам</h3><ul class="kb">${k.lessons.map((r) => `<li><span class="pill ${r.status === "verified" ? "green" : r.status === "retired" ? "" : "gold"}">${r.status === "verified" ? "подтверждён" : r.status === "retired" ? "в архиве" : "проверяется"}</span> <b>${esc(r.topic)}</b>: ${esc(r.text)}</li>`).join("")}</ul>` : ""}
+    </div>`;
+  }
   function companyHTML(s) {
-    return `<h2 class="sec">Компания Botz · отделы</h2>` + approvalsHTML(s) + directorHTML(s) + analyticsHTML(s) + riskHTML(s) + scienceHTML(s) + learningHTML(s);
+    return `<h2 class="sec">Компания Botz · отделы</h2>` + approvalsHTML(s) + directorHTML(s) + knowledgeHTML(s) + analyticsHTML(s) + riskHTML(s) + scienceHTML(s) + learningHTML(s);
   }
 
   // ---------- отчёты ----------
@@ -333,8 +365,15 @@
   }
   function approvalsHTML(s) {
     if (!s.approvals.length) return "";
-    return s.approvals.map((p) => `<div class="card approval"><div><b>Нужно ваше решение</b><div>${esc(p.title)}</div><div class="note">${time(p.ts)}${p.details.intern ? ` · ${esc(p.details.intern)}` : ""}${p.details.pnl != null ? ` · ${sign(p.details.pnl)} $` : ""}${p.details.streak_weeks ? ` · ${p.details.streak_weeks} нед. в плюсе` : ""}</div></div>
-      <div class="actions"><button class="btn primary" data-id="${p.id}" data-d="approve">Одобрить</button><button class="btn" data-id="${p.id}" data-d="reject">Отклонить</button></div></div>`).join("");
+    const PK = { strategy: "стратегия", risk: "риск", product: "приложение" };
+    return s.approvals.map((p) => {
+      const d = p.details || {};
+      let extra = "";
+      if (p.kind === "rule") extra = `<div class="note">${esc(d.rationale || "")}${d.expected_effect ? ` Ожидаемый эффект: ${esc(d.expected_effect)}` : ""}</div>`;
+      if (p.kind === "proposal") extra = `<div class="note"><span class="pill">${PK[d.kind] || d.kind}</span> ${esc(d.details || "")}${d.expected_effect ? `<br>Ожидаемый эффект: ${esc(d.expected_effect)}` : ""}</div>`;
+      return `<div class="card approval"><div style="min-width:0;flex:1"><b>Нужно ваше решение</b><div>${esc(p.title)}</div>${extra}<div class="note">${time(p.ts)}${d.intern ? ` · ${esc(d.intern)}` : ""}${d.pnl != null ? ` · ${sign(d.pnl)} $` : ""}${d.streak_weeks ? ` · ${d.streak_weeks} нед. в плюсе` : ""}</div></div>
+      <div class="actions"><button class="btn primary" data-id="${p.id}" data-d="approve">${p.kind === "proposal" ? "Принять" : "Одобрить"}</button><button class="btn" data-id="${p.id}" data-d="reject">Отклонить</button></div></div>`;
+    }).join("");
   }
 
   // ---------- график капитала ----------
@@ -381,6 +420,7 @@
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="display:flex;align-items:center;gap:10px">${avatar(a, 48)}<div><b style="font-size:18px">${esc(a.name)}</b><div>${deskPill(a)} ${rankPill(a)} <span class="badge ${a.status}">${STATUS[a.status]}</span></div></div></div><button class="btn" id="modal-close">Закрыть</button></div>
       <div class="note" style="margin-top:6px">${esc(d.description)}</div>
       <div class="note">Параметры: ${Object.entries(a.params).map(([k, v]) => `<span class="tag">${k}=${v}</span>`).join("")}</div>
+      ${(d.memory || []).length ? `<div class="note">Память компании о семействе: ${d.memory.map((m) => `${REG[m.regime]} <b class="num ${cls(m.avg)}">${sign(m.avg, 2)}%</b>/день (${m.days} дн.)`).join(" · ")}</div>` : ""}
       <div class="stat" style="margin-top:12px">
         <div><div class="k">Капитал</div><div class="v num">${fmt(a.equity)} $</div></div>
         <div><div class="k">Всего</div><div class="v num ${cls(a.pnl_total)}">${sign(a.pnl_total)} $</div></div>
@@ -420,6 +460,7 @@
     $$(".range button", view).forEach((b) => b.addEventListener("click", () => { range = b.dataset.r; $$(".range button", view).forEach((x) => x.classList.toggle("active", x === b)); drawChart(); }));
     const rb = $("#btn-research", view);
     if (rb) rb.onclick = async () => { rb.disabled = true; rb.textContent = "Считаю, около минуты…"; try { await api("/api/research", { method: "POST" }); } finally { rb.disabled = false; rb.textContent = "Запустить исследование"; refresh(true); } };
+    $$(".kb-status", view).forEach((b) => b.addEventListener("click", async (e) => { e.stopPropagation(); await api(`/api/knowledge/${b.dataset.id}/${b.dataset.st}`, { method: "POST" }); refresh(true); }));
     const lb = $("#btn-library", view);
     if (lb) lb.onclick = () => { showLibrary = !showLibrary; render(); };
     if (tab === "home") { drawChart(); const tg = $("#toggle-interns", view); if (tg) tg.onchange = () => { showInternTrades = tg.checked; render(); }; }

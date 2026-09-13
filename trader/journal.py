@@ -68,6 +68,19 @@ CREATE TABLE IF NOT EXISTS views (
     outcome_pct REAL, hit INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_views_analyst_ts ON views(analyst, ts);
+CREATE TABLE IF NOT EXISTS knowledge (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL, kind TEXT NOT NULL, topic TEXT NOT NULL, text TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active',
+    data TEXT NOT NULL DEFAULT '{}', uses INTEGER NOT NULL DEFAULT 0, updated_ts INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_kind ON knowledge(kind, status);
+CREATE TABLE IF NOT EXISTS regime_memory (
+    scope TEXT NOT NULL, key TEXT NOT NULL, regime TEXT NOT NULL,
+    days INTEGER NOT NULL DEFAULT 0, pct_sum REAL NOT NULL DEFAULT 0, wins INTEGER NOT NULL DEFAULT 0,
+    losses INTEGER NOT NULL DEFAULT 0, updated_ts INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (scope, key, regime)
+);
 """
 
 
@@ -255,6 +268,81 @@ class Journal:
 
     def analyst_mistakes(self, analyst: str, limit: int = 6) -> list[dict]:
         return self._rows("SELECT * FROM views WHERE analyst=? AND hit=0 ORDER BY id DESC LIMIT ?", (analyst, limit))
+
+    def analyst_accuracy_between(self, analyst: str, ts_from: int, ts_to: int) -> tuple[int, int]:
+        """(оценённых взглядов, попаданий) аналитика в промежутке времени."""
+        rows = self._rows("SELECT COUNT(*) AS n, SUM(COALESCE(hit,0)) AS h FROM views WHERE analyst=? AND ts>? AND ts<=? AND outcome_pct IS NOT NULL",
+                          (analyst, ts_from, ts_to))
+        return int(rows[0]["n"] or 0), int(rows[0]["h"] or 0)
+
+    # --- база знаний компании ---
+    def add_knowledge(self, ts: int, kind: str, topic: str, text: str, source: str = "", data: dict | None = None,
+                      status: str = "active") -> int:
+        cur = self._exec("INSERT INTO knowledge(ts,kind,topic,text,source,status,data,updated_ts) VALUES(?,?,?,?,?,?,?,?)",
+                         (ts, kind, topic, text, source, status, json.dumps(data or {}, ensure_ascii=False), ts))
+        return cur.lastrowid
+
+    def knowledge(self, kind: str | None = None, status: str | None = "active", topic: str | None = None, limit: int = 100) -> list[dict]:
+        sql, params = "SELECT * FROM knowledge WHERE 1=1", []
+        if kind:
+            sql += " AND kind=?"; params.append(kind)
+        if status:
+            sql += " AND status=?"; params.append(status)
+        if topic:
+            sql += " AND topic=?"; params.append(topic)
+        sql += " ORDER BY id DESC LIMIT ?"; params.append(limit)
+        rows = self._rows(sql, tuple(params))
+        for r in rows:
+            try:
+                r["data"] = json.loads(r["data"] or "{}")
+            except Exception:  # noqa: BLE001
+                r["data"] = {}
+        return rows
+
+    def knowledge_by_id(self, kid: int) -> dict | None:
+        rows = self._rows("SELECT * FROM knowledge WHERE id=?", (kid,))
+        if not rows:
+            return None
+        r = rows[0]
+        r["data"] = json.loads(r["data"] or "{}")
+        return r
+
+    def set_knowledge_status(self, kid: int, status: str, ts: int | None = None) -> None:
+        self._exec("UPDATE knowledge SET status=?, updated_ts=? WHERE id=?", (status, ts or int(time.time()), kid))
+
+    def knowledge_hit(self, kid: int) -> None:
+        self._exec("UPDATE knowledge SET uses=uses+1 WHERE id=?", (kid,))
+
+    def knowledge_counts(self) -> dict[str, dict[str, int]]:
+        out: dict[str, dict[str, int]] = {}
+        for r in self._rows("SELECT kind, status, COUNT(*) AS n FROM knowledge GROUP BY kind, status"):
+            out.setdefault(r["kind"], {})[r["status"]] = int(r["n"])
+        return out
+
+    def active_rules(self) -> list[dict]:
+        return [r for r in self.knowledge("rule", "active", limit=50)]
+
+    # --- память по режимам рынка ---
+    def memory_add(self, scope: str, key: str, regime: str, pct: float, ts: int) -> None:
+        self._exec("INSERT INTO regime_memory(scope,key,regime,days,pct_sum,wins,losses,updated_ts) VALUES(?,?,?,1,?,?,?,?) "
+                   "ON CONFLICT(scope,key,regime) DO UPDATE SET days=days+1, pct_sum=pct_sum+excluded.pct_sum, "
+                   "wins=wins+excluded.wins, losses=losses+excluded.losses, updated_ts=excluded.updated_ts",
+                   (scope, key, regime, pct, 1 if pct > 0 else 0, 1 if pct < 0 else 0, ts))
+
+    def memory_get(self, scope: str, key: str, regime: str) -> dict | None:
+        rows = self._rows("SELECT * FROM regime_memory WHERE scope=? AND key=? AND regime=?", (scope, key, regime))
+        if not rows:
+            return None
+        r = rows[0]
+        r["avg"] = r["pct_sum"] / r["days"] if r["days"] else 0.0
+        return r
+
+    def memory_table(self, scope: str | None = None) -> list[dict]:
+        rows = self._rows("SELECT * FROM regime_memory" + (" WHERE scope=?" if scope else "") + " ORDER BY scope, key, regime",
+                          (scope,) if scope else ())
+        for r in rows:
+            r["avg"] = round(r["pct_sum"] / r["days"], 3) if r["days"] else 0.0
+        return rows
 
     def equity_at(self, agent: str, ts: int) -> float | None:
         """Последнее известное значение капитала агента на момент ts (или None)."""

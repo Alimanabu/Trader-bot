@@ -66,7 +66,8 @@ def create_app(engine: Engine | None = None, start_scheduler: bool = True) -> Fa
                 price = engine.last_price or a.last_price
                 return {"agent": a.snapshot(price).__dict__, "decisions": engine.j.recent_decisions(name, 50),
                         "equity": engine.j.equity_curve(name, 500), "lessons": engine.j.lessons_for(name, 20),
-                        "description": a.strategy.description}
+                        "description": a.strategy.description,
+                        "memory": [m for m in engine.j.memory_table("family") if m["key"] == a.strategy.family]}
         raise HTTPException(404, "агент не найден")
 
     @app.get("/api/journal")
@@ -130,6 +131,20 @@ def create_app(engine: Engine | None = None, start_scheduler: bool = True) -> Fa
     def analytics():
         return {"analysts": engine.analytics.stats(), "views": engine.j.recent_views(None, 40),
                 "consensus": engine.analytics.consensus(int(__import__("time").time()))}
+
+    @app.get("/api/knowledge")
+    def knowledge():
+        return engine.knowledge_state()
+
+    @app.post("/api/knowledge/{kid}/{status}")
+    def knowledge_status(kid: int, status: str):
+        if status not in {"active", "retired", "accepted", "rejected", "done"}:
+            raise HTTPException(400, "status")
+        if not engine.j.knowledge_by_id(kid):
+            raise HTTPException(404, "запись не найдена")
+        engine.j.set_knowledge_status(kid, status)
+        engine.risk.set_rules(engine.j.active_rules())
+        return {"ok": True}
 
     @app.post("/api/research")
     def research():
