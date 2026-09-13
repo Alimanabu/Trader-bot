@@ -128,14 +128,35 @@ class PaperAccount:
             return self._sell(self.btc * price * 2, price, ts, reason)
         return self._buy(-self.btc * price * (1 + self.slippage_rate), price, ts, reason)
 
-    def apply_funding(self, price: float, hours: float = 1.0) -> float:
-        """Ставка финансирования фьючерсов за прошедшие часы (только в режиме allow_short)."""
+    def apply_funding(self, price: float, hours: float = 1.0, rate_8h: float | None = None) -> float:
+        """Финансирование фьючерсов за прошедшие часы (только allow_short).
+
+        Ставка со знаком, как на бирже: при положительной ставке лонги платят шортам,
+        при отрицательной наоборот. Возвращает списанную сумму (отрицательная = получено).
+        """
         if not self.allow_short or abs(self.btc) < 1e-12:
             return 0.0
-        charge = abs(self.btc) * price * self.funding_rate_8h * hours / 8.0
+        rate = self.funding_rate_8h if rate_8h is None else rate_8h
+        charge = self.btc * price * rate * hours / 8.0     # знак позиции × знак ставки
         self.cash -= charge
         self.funding_paid += charge
         return charge
+
+    def maintenance_ratio(self, price: float) -> float:
+        """Капитал к размеру позиции: у фьючерсов при падении ниже порога позиция ликвидируется."""
+        notional = abs(self.btc) * price
+        return float("inf") if notional < 1e-9 else self.equity(price) / notional
+
+    def liquidate(self, price: float, ts: int, fee_rate: float = 0.005) -> Trade | None:
+        """Принудительное закрытие биржей: закрываем по рынку и платим ликвидационную комиссию."""
+        t = self.flatten(price, ts, "ликвидация")
+        if t:
+            penalty = t.qty * t.price * fee_rate
+            self.cash -= penalty
+            t.fee += penalty
+            if t.pnl is not None:
+                t.pnl -= penalty
+        return t
 
     def win_rate(self) -> float:
         closes = [t for t in self.trades if t.pnl is not None]

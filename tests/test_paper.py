@@ -61,6 +61,6 @@ def test_spot_account_cannot_short():
 
 def test_funding_only_for_futures_accounts():
     f = PaperAccount("f", cash=1000, allow_short=True); f.rebalance(-1.0, 100.0, 1)
-    assert f.apply_funding(100.0, 8.0) > 0
+    assert f.apply_funding(100.0, 8.0) < 0        # при положительной ставке шорт получает финансирование
     l = PaperAccount("l", cash=1000); l.rebalance(1.0, 100.0, 1)
     assert l.apply_funding(100.0, 8.0) == 0.0

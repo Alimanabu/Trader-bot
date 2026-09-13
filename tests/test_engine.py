@@ -21,10 +21,10 @@ def hours(eng, market, n):
 
 def test_engine_creates_department(settings):
     eng, _ = make_engine(settings)
-    assert len(eng.agents) == settings.team_size == 17
+    assert len(eng.agents) == settings.team_size == 18
     assert all(a.status == "active" for a in eng.agents)
     assert sum(1 for a in eng.agents if a.strategy.side == "short") == 3
-    assert sum(1 for a in eng.agents if a.strategy.side == "both") == 3
+    assert sum(1 for a in eng.agents if a.strategy.side == "both") == 4
 
 
 def test_tick_records_decisions_and_skips_duplicate(settings):
@@ -32,7 +32,7 @@ def test_tick_records_decisions_and_skips_duplicate(settings):
     last = market.candles("BTCUSDT", "1h", 1)[-1]
     T = last.ts + 3600 + 5
     res = eng.tick(now=T)
-    assert res["ok"] and len(res["decisions"]) == 17
+    assert res["ok"] and len(res["decisions"]) == 18
     assert len(res["interns_added"]) == settings.intern_count
     eng.tick(now=T + 30)            # стажёры принимают первые решения
     again = eng.tick(now=T + 40)
@@ -40,9 +40,9 @@ def test_tick_records_decisions_and_skips_duplicate(settings):
     market.advance(1)
     res2 = eng.tick(now=T + 3600)
     # новостник с веб-поиском проверяет рынок не чаще раза в 4 часа, остальные десять успели
-    assert res2["ok"] and not res2.get("skipped") and len(res2["decisions"]) == 16
+    assert res2["ok"] and not res2.get("skipped") and len(res2["decisions"]) == 17
     team_decisions = [d for d in eng.j.recent_decisions(None, 500) if d["agent"] in {a.name for a in eng.agents if a.status == "active"}]
-    assert len(team_decisions) == 33    # первый проход + часовая контрольная запись
+    assert len(team_decisions) == 35    # первый проход + часовая контрольная запись
 
 
 def test_state_persists_between_engines(settings):
@@ -308,3 +308,44 @@ def test_short_stop_loss_above_entry(settings):
     assert bear.name in res["stops"] and abs(bear.account.btc) < 1e-9
     closing = bear.account.trades[-1]
     assert closing.side == "BUY" and closing.pnl is not None and closing.pnl < 0
+
+
+def test_liquidation_and_signed_funding(settings):
+    from trader.paper import PaperAccount
+    f = PaperAccount("f", cash=1000, fee_rate=0.001, slippage_rate=0.0, allow_short=True)
+    f.rebalance(-1.0, 100.0, 1)
+    # положительная ставка: шорт получает; отрицательная: шорт платит
+    assert f.apply_funding(100.0, 8.0, rate_8h=0.0001) < 0
+    assert f.apply_funding(100.0, 8.0, rate_8h=-0.0001) > 0
+    # цена почти удвоилась: капитал к позиции ниже порога → ликвидация
+    assert f.maintenance_ratio(195.0) < 0.05
+    t = f.liquidate(195.0, 2)
+    assert t and t.side == "BUY" and abs(f.btc) < 1e-9 and t.pnl < 0
+
+
+def test_engine_liquidation_check(settings):
+    settings.intern_count = 0
+    settings.dept_daily_loss_limit = 0.99      # иначе отдел остановится раньше, чем сработает ликвидация
+    settings.agent_daily_loss_limit = 0.99
+    settings.agent_max_drawdown = 0.99
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    bear = next(a for a in eng.agents if a.strategy.side == "short")
+    bear.account.flatten(eng.last_price, T, "тест")
+    bear.account.rebalance(-1.0, eng.last_price, T, "тест")
+    bear.stop_price = 0.0
+    eng.market.price = lambda symbol: bear.account._avg_entry * 1.97
+    res = eng.tick(now=T + 60)
+    assert bear.name in res["liquidations"] and abs(bear.account.btc) < 1e-9
+    assert any(e["kind"] == "liquidation" for e in eng.j.recent_events(50))
+
+
+def test_head_caps_are_side_aware(settings):
+    from trader.models import Candle
+    settings.intern_count = 0
+    eng, market = make_engine(settings)
+    down = [Candle(i * 3600, 400 - i, 401 - i, 399 - i, 400 - i, 1.0) for i in range(260)]
+    pol = eng.head.daily_policy(down, down[-1].ts + 3600)
+    assert pol["regime"] == "down" and pol["cap"] < pol["cap_short"] == 1.0

@@ -83,13 +83,18 @@ class LLMStrategyBase(Strategy):
             f"{news_block}{_summarize(candles)}\n\n"
             f"Текущая доля BTC в портфеле: {context.get('exposure', 0.0):.0%}. Текущая цена: {candles[-1].close:.0f}.\n"
             f"Уроки из твоих прошлых ошибок (из журнала):\n{lessons_text}\n\n"
-            "Прими решение. Спот, без плеча, без шортов: target_exposure от 0 до 1.\n"
+            + ("Прими решение. Фьючерсы без плеча: target_exposure от -1 (шорт на всё) до 1 (лонг на всё).\n" if context.get("two_sided")
+               else "Прими решение. Спот, без плеча, без шортов: target_exposure от 0 до 1.\n")
+            + ""
             f"Ты сам выбираешь, когда посмотреть на рынок снова: next_check_minutes от {lo} до {hi}. "
             "В спокойном рынке проверяй реже, при важных уровнях рядом чаще. Дополнительно можешь поставить будильники по цене: "
             "wake_if_above и wake_if_below (0 = не нужен): если цена их пересечёт, тебя разбудят раньше срока."
         )
+        schema = DECISION_SCHEMA
+        if context.get("two_sided"):
+            schema = {**DECISION_SCHEMA, "properties": {**DECISION_SCHEMA["properties"], "target_exposure": {"type": "number", "minimum": -1, "maximum": 1}}}
         try:
-            data = self.client.structured(self.system_prompt, user, DECISION_SCHEMA)
+            data = self.client.structured(self.system_prompt, user, schema)
         except LLMUnavailable as e:
             log.warning("%s: %s", self.family, e)
             return hold(f"LLM недоступен: {e}", context.get("exposure", 0.0))
@@ -122,6 +127,24 @@ class LLMRegime(LLMStrategyBase):
     )
 
 
+class LLMRegimeBoth(LLMStrategyBase):
+    family = "llm_regime_both"
+    side = "both"
+    description = "Нейросеть-двусторонний: определяет режим рынка и торгует в обе стороны на фьючерсном демосчёте."
+    system_prompt = (
+        "Ты портфельный стратег по BTC/USDT на бессрочных фьючерсах без плеча, решения раз в час или реже. "
+        "Ты можешь держать лонг (target_exposure от 0 до 1), шорт (от -1 до 0) или быть вне рынка (0). "
+        "Определи режим рынка: в устойчивом росте держи лонг, в устойчивом падении шорт, в боковике и при высокой "
+        "волатильности сокращай позицию до нуля. Учитывай, что за удержание позиции платится финансирование. "
+        "Меняй долю плавно, не более чем на 0.5 за один шаг. Учитывай уроки из прошлых ошибок. Отвечай строго по схеме."
+    )
+
+    def decide(self, candles, context=None):
+        context = dict(context or {})
+        context["two_sided"] = True
+        return super().decide(candles, context)
+
+
 class LLMNews(LLMStrategyBase):
     family = "llm_news"
     description = "Нейросеть-новостник: ищет свежие новости по биткоину и оценивает их влияние на ближайшие часы."
@@ -152,4 +175,4 @@ class LLMNews(LLMStrategyBase):
         return super().decide(candles, context)
 
 
-LLM_STRATEGIES: list[type[Strategy]] = [LLMTechnician, LLMRegime, LLMNews]
+LLM_STRATEGIES: list[type[Strategy]] = [LLMTechnician, LLMRegime, LLMNews, LLMRegimeBoth]

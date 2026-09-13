@@ -41,6 +41,8 @@ def backtest(strategy: Strategy, candles: list[Candle], start_balance: float = 1
         price = view[-1].close
         sig = strategy.decide(view, {"exposure": acc.exposure(price)})
         acc.rebalance(sig.target_exposure, price, view[-1].ts, sig.reason)
+        if acc.allow_short and (view[-1].ts + 3600) % 28800 == 0:
+            acc.apply_funding(price, 8.0)
         eq = acc.equity(price)
         equities.append(eq)
         peak = max(peak, eq)

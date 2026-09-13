@@ -39,6 +39,8 @@ class Settings:
     risk_per_trade: float = 1.0        # ограничение риска на сделку (1.0 = выключено, размер задаёт стратегия)
     stop_atr_mult: float = 2.0         # стоп-лосс на расстоянии N·ATR от цены входа
     stop_cooldown_min: int = 30        # после стопа агент не входит заново столько минут
+    stop_slippage: float = 0.0005      # дополнительное проскальзывание на стопах (рыночный ордер в движении)
+    liquidation_ratio: float = 0.05    # фьючерсы: капитал/позиция ниже этого → ликвидация
     agent_daily_loss_limit: float = 0.03
     agent_max_drawdown: float = 0.10
     dept_daily_loss_limit: float = 0.02
@@ -49,7 +51,7 @@ class Settings:
     panel_password: str = ""
     history_candles: int = 800
     bench_size: int = 30
-    team_size: int = 17
+    team_size: int = 18
     intern_count: int = 20
     llm_min_interval_min: int = 60     # нейро-агент не может просить будить себя чаще (защита от расходов)
     llm_max_interval_min: int = 360
@@ -86,6 +88,8 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         risk_per_trade=float(env.get("RISK_PER_TRADE", "1.0")),
         stop_atr_mult=float(env.get("STOP_ATR_MULT", "2.0")),
         stop_cooldown_min=int(env.get("STOP_COOLDOWN_MIN", "30")),
+        stop_slippage=float(env.get("STOP_SLIPPAGE", "0.0005")),
+        liquidation_ratio=float(env.get("LIQUIDATION_RATIO", "0.05")),
         agent_daily_loss_limit=float(env.get("AGENT_DAILY_LOSS_LIMIT", "0.03")),
         agent_max_drawdown=float(env.get("AGENT_MAX_DRAWDOWN", "0.10")),
         dept_daily_loss_limit=float(env.get("DEPT_DAILY_LOSS_LIMIT", "0.02")),
@@ -96,7 +100,7 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         panel_password=env.get("PANEL_PASSWORD", ""),
         history_candles=int(env.get("HISTORY_CANDLES", "800")),
         bench_size=int(env.get("BENCH_SIZE", "30")),
-        team_size=int(env.get("TEAM_SIZE", "17")),
+        team_size=int(env.get("TEAM_SIZE", "18")),
         intern_count=int(env.get("INTERN_COUNT", "20")),
         llm_min_interval_min=int(env.get("LLM_MIN_INTERVAL_MIN", "60")),
         llm_max_interval_min=int(env.get("LLM_MAX_INTERVAL_MIN", "360")),

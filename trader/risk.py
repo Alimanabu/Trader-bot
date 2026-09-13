@@ -28,7 +28,8 @@ class RiskManager:
     def __init__(self, settings: Settings):
         self.s = settings
         self.dept_halted_day: str = ""
-        self.policy_cap: float = 1.0      # потолок доли, выставленный руководителем по режиму рынка
+        self.policy_cap: float = 1.0      # потолок доли для лонга, выставленный руководителем по режиму рынка
+        self.policy_cap_short: float = 1.0  # потолок доли для шорта
 
     def stop_distance(self, atr_pct: float) -> float:
         """Расстояние стопа от входа в долях цены. Не меньше 0.5%, не больше 10%."""
@@ -39,7 +40,7 @@ class RiskManager:
         и не больше потолка agent_max_exposure (по модулю; шорт отрицательный)."""
         dist = self.stop_distance(atr_pct)
         by_risk = self.s.risk_per_trade / dist if dist > 0 else 1.0
-        cap = min(self.s.agent_max_exposure, self.policy_cap)
+        cap = min(self.s.agent_max_exposure, self.policy_cap if desired >= 0 else self.policy_cap_short)
         mag = min(cap, abs(desired) * min(1.0, by_risk))
         return max(0.0, mag) * (1 if desired >= 0 else -1)
 
@@ -72,7 +73,8 @@ class RiskManager:
         if agent.status == "paused":
             return RiskVerdict(False, 0.0, "агент на паузе до конца дня")
         if abs(target - signal.target_exposure) > 1e-9:
-            if self.policy_cap < min(1.0, self.s.agent_max_exposure) and abs(abs(target) - self.policy_cap * min(1.0, abs(signal.target_exposure))) < 1e-9:
-                return RiskVerdict(True, target, f"потолок руководителя {self.policy_cap:.0%} по режиму рынка")
+            pc = self.policy_cap if target >= 0 else self.policy_cap_short
+            if pc < min(1.0, self.s.agent_max_exposure) and abs(abs(target) - pc * min(1.0, abs(signal.target_exposure))) < 1e-9:
+                return RiskVerdict(True, target, f"потолок руководителя {pc:.0%} по режиму рынка")
             return RiskVerdict(True, target, f"размер по риску: {target:.0%} (стоп {self.stop_distance(atr_pct)*100:.1f}%)")
         return RiskVerdict(True, target, "ok")

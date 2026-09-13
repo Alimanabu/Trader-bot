@@ -16,7 +16,7 @@
     const was = x.exposure_before == null ? null : Math.round(x.exposure_before * 100);
     return `<span class="dim">без сделки${was != null ? `, уже ${was}% в BTC` : ""}</span>`;
   }
-  const KIND = { fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", stop: "стоп-лосс", demote: "в стажёры", weekly: "ротация", live_ready: "к реальным торгам", head: "руководитель", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
+  const KIND = { fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", stop: "стоп-лосс", demote: "в стажёры", weekly: "ротация", live_ready: "к реальным торгам", head: "руководитель", funding: "финансирование", liquidation: "ликвидация", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
 
   const TABS = ["home", "team", "interns", "lab", "reports"];
   let state = null, tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "home", equityData = null, summary = null, families = null, range = "all";
@@ -259,7 +259,8 @@
       <div class="card"><h3>Руководитель отдела</h3><div class="stat">
         <div><div class="k">Подход</div><div class="v" style="font-size:15px">${h.mode === "defensive" ? "защитный" : "обычный"}</div></div>
         <div><div class="k">Режим рынка</div><div class="v" style="font-size:15px">${REG[h.regime] || "—"}</div></div>
-        <div><div class="k">Потолок доли</div><div class="v num">${fmt((h.cap ?? 1) * 100, 0)}%</div></div>
+        <div><div class="k">Потолок лонг · шорт</div><div class="v num">${fmt((h.cap ?? 1) * 100, 0)}% · ${fmt((h.cap_short ?? 1) * 100, 0)}%</div></div>
+        <div><div class="k">Ставка финансирования</div><div class="v num">${s.funding_rate == null ? "—" : sign(s.funding_rate * 100, 4) + "%"}<span class="muted" style="font-size:11px"> / 8 ч</span></div></div>
         <div><div class="k">Порог сделки</div><div class="v num">${fmt((h.min_rebalance ?? 0.05) * 100, 0)}%</div></div>
         <div><div class="k">Недель хуже долларов подряд</div><div class="v num ${h.fail_weeks ? "down" : ""}">${h.fail_weeks ?? 0}</div></div>
       </div>

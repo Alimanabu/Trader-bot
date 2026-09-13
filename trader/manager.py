@@ -57,6 +57,7 @@ class DepartmentHead:
 
     # --- политика руководителя: режим рынка, потолок доли, ответственность за результат ---
     CAPS = {"balanced": {"up": 1.0, "flat": 0.7, "down": 0.4}, "defensive": {"up": 0.7, "flat": 0.4, "down": 0.2}}
+    CAPS_SHORT = {"balanced": {"up": 0.4, "flat": 0.7, "down": 1.0}, "defensive": {"up": 0.2, "flat": 0.4, "down": 0.7}}
 
     def policy(self) -> dict:
         return self.j.kv_get("head_policy", None) or {
@@ -86,17 +87,18 @@ class DepartmentHead:
         """Раз в день: оценить рынок и выставить потолок доли для всего отдела."""
         pol = self.policy()
         if not self.s.head_policy:
-            pol.update({"cap": 1.0, "regime": "off"})
+            pol.update({"cap": 1.0, "cap_short": 1.0, "regime": "off"})
             self._save_policy(pol)
             return pol
         regime = self.assess_regime(candles)
         cap = self.CAPS[pol["mode"]][regime]
+        cap_short = self.CAPS_SHORT[pol["mode"]][regime]
         if regime != pol.get("regime") or abs(cap - pol.get("cap", 1.0)) > 1e-9:
             names = {"up": "рост", "flat": "боковик", "down": "падение"}
-            self.j.event("head", f"Руководитель: рынок — {names[regime]}, потолок доли для отдела {cap:.0%} "
+            self.j.event("head", f"Руководитель: рынок — {names[regime]}, потолок для лонга {cap:.0%}, для шорта {cap_short:.0%} "
                                  f"(подход: {'обычный' if pol['mode'] == 'balanced' else 'защитный'})", None,
-                         {"regime": regime, "cap": cap, "mode": pol["mode"]}, ts=ts)
-        pol["regime"], pol["cap"], pol["changed_ts"] = regime, cap, ts
+                         {"regime": regime, "cap": cap, "cap_short": cap_short, "mode": pol["mode"]}, ts=ts)
+        pol["regime"], pol["cap"], pol["cap_short"], pol["changed_ts"] = regime, cap, cap_short, ts
         self._save_policy(pol)
         return pol
 
@@ -132,6 +134,7 @@ class DepartmentHead:
             pol["mode"] = "balanced"
             notes.append("две недели в плюсе и рынок растёт: возвращаю обычный подход")
         pol["cap"] = self.CAPS[pol["mode"]].get(pol.get("regime", "flat"), 1.0) if self.s.head_policy else 1.0
+        pol["cap_short"] = self.CAPS_SHORT[pol["mode"]].get(pol.get("regime", "flat"), 1.0) if self.s.head_policy else 1.0
         self._save_policy(pol)
         self.j.event("head", "Отчёт руководителя за неделю: " + "; ".join(notes), None, pol, ts=ts)
         return pol

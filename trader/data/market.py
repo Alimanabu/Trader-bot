@@ -32,6 +32,10 @@ class MarketData(ABC):
         """Текущая, ещё не закрытая свеча (если источник её отдаёт)."""
         return None
 
+    def funding_rate(self, symbol: str) -> float:
+        """Текущая ставка финансирования бессрочных фьючерсов за 8 часов (доля). По умолчанию 0.01%."""
+        return 0.0001
+
 
 class BinanceMarket(MarketData):
     name = "binance"
@@ -54,6 +58,11 @@ class BinanceMarket(MarketData):
         r = self.client.get(f"{self.base_url}/api/v3/ticker/price", params={"symbol": symbol})
         r.raise_for_status()
         return float(r.json()["price"])
+
+    def funding_rate(self, symbol: str) -> float:
+        r = self.client.get("https://fapi.binance.com/fapi/v1/premiumIndex", params={"symbol": symbol})
+        r.raise_for_status()
+        return float(r.json()["lastFundingRate"])
 
     def forming(self, symbol: str, timeframe: str) -> Candle | None:
         r = self.client.get(f"{self.base_url}/api/v3/klines", params={"symbol": symbol, "interval": timeframe, "limit": 1})
@@ -89,6 +98,11 @@ class BybitMarket(MarketData):
         r = self.client.get(f"{self.base_url}/v5/market/tickers", params={"category": "spot", "symbol": symbol})
         r.raise_for_status()
         return float(r.json()["result"]["list"][0]["lastPrice"])
+
+    def funding_rate(self, symbol: str) -> float:
+        r = self.client.get(f"{self.base_url}/v5/market/tickers", params={"category": "linear", "symbol": symbol})
+        r.raise_for_status()
+        return float(r.json()["result"]["list"][0]["fundingRate"])
 
     def forming(self, symbol: str, timeframe: str) -> Candle | None:
         r = self.client.get(f"{self.base_url}/v5/market/kline",
@@ -138,6 +152,14 @@ class FallbackMarket(MarketData):
             except Exception:  # noqa: BLE001
                 continue
         return None
+
+    def funding_rate(self, symbol: str) -> float:
+        for src in self.sources:
+            try:
+                return src.funding_rate(symbol)
+            except Exception:  # noqa: BLE001
+                continue
+        return 0.0001
 
 
 class SyntheticMarket(MarketData):

@@ -158,6 +158,42 @@ class Engine:
             elif pos < 0 and trade.side == "SELL":
                 a.stop_price = entry * (1 + dist)
 
+    def _apply_funding(self, alive: list[Agent], price: float, candle_ts: int) -> None:
+        """Финансирование фьючерсов раз в 8 часов (00:00, 08:00, 16:00 UTC) по текущей ставке биржи."""
+        step = self._step_seconds()
+        if (candle_ts + step) % 28800 != 0:
+            return
+        futures = [a for a in alive if a.account.allow_short and abs(a.account.btc) > 1e-12]
+        if not futures:
+            return
+        try:
+            rate = float(self.market.funding_rate(self.s.symbol))
+        except Exception:  # noqa: BLE001
+            rate = 0.0001
+        self.j.kv_set("funding_rate", rate)
+        total = 0.0
+        for a in futures:
+            total += a.account.apply_funding(price, 8.0, rate_8h=rate)
+        self.j.event("funding", f"Финансирование фьючерсов: ставка {rate*100:+.4f}%, отдел {'заплатил' if total > 0 else 'получил'} {abs(total):.2f} $",
+                     None, {"rate": rate, "total": total}, ts=candle_ts + step)
+
+    def _check_liquidations(self, alive: list[Agent], price: float, now_i: int) -> list[str]:
+        out = []
+        for a in alive:
+            acc = a.account
+            if acc.allow_short and abs(acc.btc) > 1e-12 and acc.maintenance_ratio(price) <= self.s.liquidation_ratio:
+                t = acc.liquidate(price, now_i)
+                if t:
+                    self.j.trade(t)
+                    self.j.decision(now_i, a.name, a.strategy.family, t.side, 0.0, 1.0, "ликвидация: капитал ниже поддерживающей маржи",
+                                    price, a.equity(price), True, None, trade=t, exposure_before=0.0)
+                    self.j.event("liquidation", f"{a.name}: позиция ликвидирована биржей", a.name, ts=now_i)
+                a.stop_price = 0.0
+                a.last_target = 0.0
+                a.next_check_ts = max(a.next_check_ts, now_i + self.s.stop_cooldown_min * 60)
+                out.append(a.name)
+        return out
+
     def _check_stops(self, alive: list[Agent], price: float, now_i: int) -> list[str]:
         """Каждую минуту: если цена ушла ниже стопа, закрыть позицию и дать агенту паузу перед новым входом."""
         hit = []
@@ -165,7 +201,8 @@ class Engine:
             pos = a.account.btc
             triggered = a.stop_price and ((pos > 0 and price <= a.stop_price) or (pos < 0 and price >= a.stop_price))
             if triggered:
-                t = a.account.flatten(price, now_i, f"стоп-лосс {a.stop_price:.0f}")
+                fill_px = price * (1 - self.s.stop_slippage) if pos > 0 else price * (1 + self.s.stop_slippage)
+                t = a.account.flatten(fill_px, now_i, f"стоп-лосс {a.stop_price:.0f}")
                 if t:
                     self.j.trade(t)
                     self.j.decision(now_i, a.name, a.strategy.family, t.side, 0.0, 1.0, f"стоп-лосс: цена {price:.0f} {'ниже' if pos > 0 else 'выше'} {a.stop_price:.0f}",
@@ -265,10 +302,12 @@ class Engine:
             self.head.daily_policy(candles, now_i)
         pol = self.head.policy()
         self.risk.policy_cap = float(pol.get("cap", 1.0))
+        self.risk.policy_cap_short = float(pol.get("cap_short", pol.get("cap", 1.0)))
         for a in alive:
             a.account.min_rebalance_frac = float(pol.get("min_rebalance", 0.05))
         atr_pct = self._atr_pct(candles)
         summary["stops"] = self._check_stops(alive, price, now_i)
+        summary["liquidations"] = self._check_liquidations(alive, price, now_i)
         view = None
         for a in alive:
             due, why_due = self._is_due(a, now_i, price, force)
@@ -287,8 +326,7 @@ class Engine:
                 a.next_check_ts = now_i + 60
 
         if new_candle:
-            for a in alive:
-                a.account.apply_funding(price, 1.0)
+            self._apply_funding(alive, price, last.ts)
             self.learner.after_tick(self.agents, candles)
             self.head.review(self.agents, price, now_i)     # ежедневный разбор до найма: освободившиеся места займут сразу
         hired = self.head.hire_if_needed(self.agents, candles, now_i)
@@ -454,6 +492,7 @@ class Engine:
             "max_exposure": self.s.agent_max_exposure,
             "risk_per_trade": self.s.risk_per_trade,
             "head": self.head.policy(),
+            "funding_rate": self.j.kv_get("funding_rate", None),
         }
 
     def _trades_24h(self, now_i: int) -> list[dict]:

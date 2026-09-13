@@ -198,3 +198,5 @@ details.acc[open] .acc-arrow { transform: rotate(90deg); }
 .bar.short > i { background: var(--down); }
 .pill.bear { background: rgba(255,107,107,.15); color: var(--down); font-weight: 500; }
 .pill.both { background: rgba(124,216,255,.15); color: #7cd8ff; font-weight: 500; }
+
+.kind.liquidation { color: var(--down); } .kind.funding { color: var(--muted); }
