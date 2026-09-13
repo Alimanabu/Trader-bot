@@ -52,6 +52,8 @@ class ClaudeClient:
         self._spend_day = ""
         self._spend_usd = 0.0
         self._calls = 0
+        self.last_error = ""
+        self.last_error_ts = 0
         if api_key:
             import anthropic  # импорт здесь, чтобы тесты без ключа не требовали сеть
             self._client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=180.0)
@@ -76,6 +78,12 @@ class ClaudeClient:
     def spend_today(self) -> dict:
         self._load_spend()
         return {"day": self._spend_day, "usd": round(self._spend_usd, 4), "calls": self._calls, "budget": self.daily_budget}
+
+    def _fail(self, msg: str) -> None:
+        import time as _t
+        self.last_error, self.last_error_ts = msg, int(_t.time())
+        log.warning("LLM: %s", msg)
+        raise LLMUnavailable(msg)
 
     def _check_budget(self) -> None:
         self._load_spend()
@@ -123,13 +131,14 @@ class ClaudeClient:
             else:
                 raise
         except anthropic.RateLimitError as e:
-            raise LLMUnavailable(f"лимит запросов: {e.message}") from e
+            self._fail(f"лимит запросов: {e.message}")
         except anthropic.APIConnectionError as e:
-            raise LLMUnavailable(f"нет связи с API: {e}") from e
+            self._fail(f"нет связи с API: {e}")
         except anthropic.APIStatusError as e:
-            raise LLMUnavailable(f"ошибка API {e.status_code}: {e.message}") from e
+            self._fail(f"ошибка API {e.status_code}: {e.message}")
 
         self._account(response)
+        self.last_error = ""
         if response.stop_reason == "refusal":
             details = getattr(response, "stop_details", None)
             raise LLMUnavailable(f"модель отказалась отвечать: {getattr(details, 'category', None)}")
@@ -162,11 +171,11 @@ class ClaudeClient:
                     continue
                 break
         except anthropic.RateLimitError as e:
-            raise LLMUnavailable(f"лимит запросов: {e.message}") from e
+            self._fail(f"лимит запросов: {e.message}")
         except anthropic.APIConnectionError as e:
-            raise LLMUnavailable(f"нет связи с API: {e}") from e
+            self._fail(f"нет связи с API: {e}")
         except anthropic.APIStatusError as e:
-            raise LLMUnavailable(f"ошибка API {e.status_code}: {e.message}") from e
+            self._fail(f"ошибка API {e.status_code}: {e.message}")
         if response.stop_reason == "refusal":
             raise LLMUnavailable("модель отказалась отвечать")
         text = "\n".join(b.text for b in response.content if b.type == "text").strip()

@@ -281,6 +281,7 @@ class Engine:
 
         if new_candle:
             self.learner.after_tick(self.agents, candles)
+            self.head.review(self.agents, price, now_i)     # ежедневный разбор до найма: освободившиеся места займут сразу
         hired = self.head.hire_if_needed(self.agents, candles, now_i)
         new_interns = self.head.fill_interns(self.agents, candles, now_i)
         for h in hired + new_interns:
@@ -293,8 +294,6 @@ class Engine:
         self.agents.extend(new_interns)
         summary["hired"] = [h.name for h in hired]
         summary["interns_added"] = [h.name for h in new_interns]
-        if new_candle:
-            self.head.review(self.agents, price, now_i)
         if not new_candle and not summary["decisions"] and view is None and not hired and not new_interns:
             summary["skipped"] = True
         self.save()
@@ -425,6 +424,7 @@ class Engine:
             "mode": "paper",
             "llm": self.client.enabled if self.client else False,
             "llm_spend": self.client.spend_today() if self.client else None,
+            "llm_error": {"text": self.client.last_error, "ts": self.client.last_error_ts} if self.client and self.client.last_error else None,
             "llm_model": self.s.llm_model,
             "error": self.last_error,
             "department": {"equity": round(total, 2), "start": round(start, 2), "pnl": round(total - start, 2),

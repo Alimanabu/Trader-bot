@@ -57,6 +57,8 @@ class Settings:
     llm_daily_budget_usd: float = 2.0      # жёсткий потолок расходов на нейросеть в сутки
     head_policy: bool = True               # руководитель управляет потолком доли по режиму рынка и отвечает за результат
     head_fail_weeks: int = 2               # столько недель подряд хуже «просто держать доллары» → защитный подход
+    intern_idle_days: int = 3              # котёнок без единой сделки столько дней отчисляется
+    team_idle_days: int = 7                # кот без сделок столько дней уходит в котята на недельной ротации
     weekly_demote_max: int = 3             # сколько худших членов команды за неделю можно перевести в стажёры
     live_ready_weeks: int = 3              # недель подряд в плюсе, чтобы стать кандидатом на реальный счёт
     research_lookback: int = 720
@@ -102,6 +104,8 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         llm_daily_budget_usd=float(env.get("LLM_DAILY_BUDGET_USD", "2.0")),
         head_policy=_bool(env.get("HEAD_POLICY"), True),
         head_fail_weeks=int(env.get("HEAD_FAIL_WEEKS", "2")),
+        intern_idle_days=int(env.get("INTERN_IDLE_DAYS", "3")),
+        team_idle_days=int(env.get("TEAM_IDLE_DAYS", "7")),
         weekly_demote_max=int(env.get("WEEKLY_DEMOTE_MAX", "3")),
         live_ready_weeks=int(env.get("LIVE_READY_WEEKS", "3")),
         research_lookback=int(env.get("RESEARCH_LOOKBACK", "720")),

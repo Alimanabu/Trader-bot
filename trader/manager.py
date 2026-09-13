@@ -273,12 +273,28 @@ class DepartmentHead:
         self.j.event("hire", f"{intern.name} повышен из стажёров ({reason}; за {days:.0f} дн. стажировки {pnl:+.2f} $)", intern.name, ts=ts)
         log.info("Повышен %s", intern.name)
 
+    # --- активность ---
+    @staticmethod
+    def idle_days(a: Agent, ts: int) -> float:
+        last = a.account.trades[-1].ts if a.account.trades else a.hired_at
+        return max(0.0, (ts - last) / 86400)
+
+    def drop_idle_interns(self, agents: list[Agent], price: float, ts: int) -> list[str]:
+        out = []
+        for a in [x for x in agents if is_intern(x)]:
+            d = self.idle_days(a, ts)
+            if d >= self.s.intern_idle_days:
+                self.drop_intern(a, price, ts, f"нет сделок {d:.0f} дн.")
+                out.append(a.name)
+        return out
+
     # --- ежедневный отчёт ---
     def review(self, agents: list[Agent], price: float, ts: int) -> None:
         day_key = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
         if self.j.kv_get("review_day") == day_key:
             return
         self.j.kv_set("review_day", day_key)
+        self.drop_idle_interns(agents, price, ts)
         team = [a for a in agents if is_team(a)]
         if team:
             self._report(team, [a for a in agents if is_intern(a)], price, ts)
@@ -323,6 +339,16 @@ class DepartmentHead:
         # понижение
         rated = sorted([a for a in team if a.week_start_equity > 0], key=lambda a: a.pnl_week_pct(price))
         losers = [a for a in rated if a.pnl_week_pct(price) < 0][: self.s.weekly_demote_max]
+        # спящие: без единой сделки team_idle_days дней — тоже в котята, но только если есть кем заменить
+        # (активные котята с плюсом за неделю), иначе команда осталась бы пустой
+        promotable = [a for a in interns if a.week_start_equity > 0 and a.pnl_week_pct(price) > 0]
+        idle_slots = max(0, len(promotable) - len(losers))
+        for a in sorted(rated, key=lambda a: -self.idle_days(a, ts)):
+            if idle_slots <= 0:
+                break
+            if a not in losers and self.idle_days(a, ts) >= self.s.team_idle_days:
+                losers.append(a)
+                idle_slots -= 1
         for a in losers:
             pct = a.pnl_week_pct(price)
             a.account.flatten(price, ts, "перевод в стажёры")
@@ -335,7 +361,8 @@ class DepartmentHead:
             a.live_ready = False
             self.j.save_agent(a)
             res["demoted"].append(a.name)
-            self.j.event("demote", f"{a.name} переведён в стажёры: неделя {pct:+.2f}%", a.name, ts=ts)
+            why = f"неделя {pct:+.2f}%" if pct < 0 else f"нет сделок {self.idle_days(a, ts):.0f} дн."
+            self.j.event("demote", f"{a.name} переведён в стажёры: {why}", a.name, ts=ts)
         # повышение лучших стажёров с плюсом за неделю
         vacancies = self.team_size - len([a for a in agents if is_team(a)])
         cands = sorted([a for a in interns if a.week_start_equity > 0 and a.pnl_week_pct(price) > 0],

@@ -256,3 +256,33 @@ def test_head_regime_caps_and_mode_switch(settings):
     assert pol["cap"] <= 0.7
     kinds = [e for e in eng.j.recent_events(200) if e["kind"] == "head"]
     assert kinds and any("защитный" in e["message"] for e in kinds)
+
+
+def test_idle_interns_are_dropped_and_replaced(settings):
+    settings.intern_count = 3
+    settings.intern_idle_days = 3
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    interns = [a for a in eng.agents if a.status == "intern"]
+    assert len(interns) == 3
+    # трое суток без единой сделки → отчисление на ежедневном разборе и замена
+    for a in interns:
+        a.account.trades = []
+        a.hired_at = T - 4 * 86400
+    eng.j.kv_set("review_day", "")
+    market.advance(1)
+    eng.tick(now=T + 3600)
+    dropped = [a for a in interns if a.status == "dropped"]
+    assert len(dropped) == 3
+    assert len([a for a in eng.agents if a.status == "intern"]) == 3
+    assert any(e["kind"] == "drop" and "нет сделок" in e["message"] for e in eng.j.recent_events(100))
+
+
+def test_research_limits_same_family(candles):
+    from trader.research import StrategyLab
+    lab = StrategyLab(max_combos=6, max_per_family=2)
+    res = lab.research(candles[-300:], families=["breakout", "keltner"], top_n=6)
+    fams = [r.family for r in res]
+    assert fams.count("breakout") <= 2 and fams.count("keltner") <= 2

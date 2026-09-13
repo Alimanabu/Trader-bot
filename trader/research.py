@@ -88,9 +88,10 @@ def _valid(family: str, p: dict) -> bool:
 class StrategyLab:
     """Перебирает семейства и параметры, возвращает лучших кандидатов."""
 
-    def __init__(self, fee_rate: float = 0.001, max_combos: int = 12):
+    def __init__(self, fee_rate: float = 0.001, max_combos: int = 12, max_per_family: int = 2):
         self.fee_rate = fee_rate
         self.max_combos = max_combos
+        self.max_per_family = max_per_family
 
     def research(self, candles: list[Candle], families: list[str] | None = None, top_n: int = 5,
                  exclude: set[str] | None = None) -> list[BacktestResult]:
@@ -104,7 +105,17 @@ class StrategyLab:
                 strat = build_strategy(fam, params)
                 results.append(backtest(strat, candles, fee_rate=self.fee_rate))
         results.sort(key=lambda r: r.score(), reverse=True)
-        return results[:top_n]
+        # разнообразие: не больше max_per_family кандидатов одного семейства
+        picked: list[BacktestResult] = []
+        per_fam: dict[str, int] = {}
+        for r in results:
+            if per_fam.get(r.family, 0) >= self.max_per_family:
+                continue
+            picked.append(r)
+            per_fam[r.family] = per_fam.get(r.family, 0) + 1
+            if len(picked) >= top_n:
+                break
+        return picked
 
     def families_count(self) -> list[str]:
         return [s.family for s in RULE_STRATEGIES]

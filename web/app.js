@@ -132,13 +132,14 @@
   // ---------- раскрывающаяся строка агента ----------
   const mm = (m) => ":" + String(m).padStart(2, "0");
   const hhmm = (ts) => (ts ? astanaTime(new Date(ts * 1000)) : "—");
+  const llmBroken = (a) => /LLM недоступен|нет ключа|бюджет/i.test(a.last_reason || "");
   function agentRow(a, opts = {}) {
     const isIntern = a.status === "intern";
     const nameShort = esc(a.name);
     const nextIn = a.next_decision_ts ? Math.max(0, Math.round((a.next_decision_ts - Date.now() / 1000) / 60)) : null;
     return `<details class="acc ${a.status}" data-name="${nameShort}">
       <summary>
-        <div class="acc-name">${catSVG(a.name, isIntern ? "intern" : "team", 36)}<div><b>${nameShort}</b><span class="state ${a.status !== "active" && a.status !== "intern" ? a.status : a.exposure > 0 ? "inpos" : "wait"}">${a.status === "paused" ? "пауза" : a.status === "fired" ? "уволен" : a.status === "dropped" ? "отчислен" : a.exposure > 0 ? `в BTC ${fmt(a.exposure * 100, 0)}%` : a.decided_at ? "ждёт сигнала" : "ещё не решал"}</span></div></div>
+        <div class="acc-name">${catSVG(a.name, isIntern ? "intern" : "team", 36)}<div><b>${nameShort}</b><span class="state ${llmBroken(a) ? "fired" : a.status !== "active" && a.status !== "intern" ? a.status : a.exposure > 0 ? "inpos" : "wait"}">${llmBroken(a) ? "ошибка нейросети" : a.status === "paused" ? "пауза" : a.status === "fired" ? "уволен" : a.status === "dropped" ? "отчислен" : a.exposure > 0 ? `в BTC ${fmt(a.exposure * 100, 0)}%` : a.decided_at ? `ждёт сигнала · ${hhmm(a.decided_at)}` : "ещё не решал"}</span><span class="reason">${esc(a.last_reason || "")}</span></div></div>
         <div class="acc-badges">${a.live_ready ? '<span class="pill gold">готов к реальным</span>' : ""}${a.trial_weeks ? `<span class="pill">испытание · ${a.trial_weeks}-я нед.</span>` : ""}${!isIntern && a.streak_weeks > 0 ? `<span class="pill green">серия ${a.streak_weeks} нед.</span>` : ""}</div>
         <div class="acc-time num" title="Как часто агент смотрит на рынок">${a.strategy.startsWith("llm_") ? "сам" : a.cadence_minutes >= 60 ? "1 ч" : a.cadence_minutes + " м"}</div>
         <div class="acc-pnl num ${cls(a.pnl_24h)}">${sign(a.pnl_24h)} $<small>24 ч</small></div>
@@ -209,7 +210,7 @@
         <div><div class="k">Лучший</div><div class="v num ${cls(best?.pnl_total)}">${best ? sign(best.pnl_total) + " $" : "—"}</div><div class="note">${best ? esc(best.name) : ""}</div></div>
         <div><div class="k">Следующий решает</div><div class="v" style="font-size:14px">${nextUp ? `${esc(nextUp.name)} в ${hhmm(nextUp.next_decision_ts)}` : "—"}</div></div>
       </div>
-      <div class="note" style="margin-top:10px">Котята торгуют в тени на своих демосчетах по 1000 $. Каждый понедельник ротация: коты из команды с минусом за неделю (до трёх худших) уходят в котята на испытательный срок, а лучшие котята с плюсом за неделю занимают их места со свежим счётом. Котёнок с минусом две недели подряд отчисляется. Кот, три недели подряд в плюсе, становится кандидатом на реальный счёт.</div></div>
+      <div class="note" style="margin-top:10px">Котята торгуют в тени на своих демосчетах по 1000 $. Котёнок без единой сделки три дня отчисляется, его место занимает кандидат другого семейства. Каждый понедельник ротация: коты из команды с минусом за неделю (до трёх худших) уходят в котята на испытательный срок, а лучшие котята с плюсом за неделю занимают их места со свежим счётом. Котёнок с минусом две недели подряд отчисляется. Кот, три недели подряд в плюсе, становится кандидатом на реальный счёт.</div></div>
       <div class="card list"><h3>Рейтинг · нажмите на строку</h3><div class="acc-head"><span>Стажёр</span><span>Ритм</span><span>За 24 ч</span><span>За всё время</span><span></span></div>${s.interns.map((a) => agentRow(a)).join("")}</div>
       <div class="card"><h3>Что они делают прямо сейчас · последние решения</h3>${feed.length ? `<ul class="feed">${feed.map((d) => `<li><time>${hhmm(d.ts)}</time><b>${esc(d.agent)}</b><span class="tag ${d.action === "BUY" ? "buy" : d.action === "SELL" ? "sell" : ""}">${ACTION[d.action] || d.action}${d.trade_side ? (d.trade_side === "BUY" ? " · купил" : " · продал") : ""}</span><span class="muted">${esc(d.reason)}</span></li>`).join("")}</ul>` : '<div class="note">Первые решения появятся в ближайший час, у каждого стажёра в свою минуту.</div>'}</div>`;
   }
@@ -263,7 +264,7 @@
         <div><div class="k">Расход сегодня</div><div class="v num">${fmt(s.llm_spend?.usd ?? 0, 2)} $ <span class="muted" style="font-size:12px">из ${fmt(s.llm_spend?.budget ?? 0, 2)} $</span></div></div>
         <div><div class="k">Вызовов сегодня</div><div class="v num">${s.llm_spend?.calls ?? 0}</div></div>
         <div><div class="k">Агентов и котят</div><div class="v num">${s.agents.filter((a) => a.status !== "fired").length} · ${s.interns.length}</div></div>
-      </div></div>
+      </div>${s.llm_error ? `<div class="note down" style="margin-top:8px">Последняя ошибка (${hhmm(s.llm_error.ts)}): ${esc(s.llm_error.text)}</div>` : ""}${s.llm && !(s.llm_spend?.calls) ? '<div class="note warn" style="margin-top:8px">Сегодня ни одного вызова нейросети. Если это не начало суток, проверьте ключ и баланс в консоли Anthropic.</div>' : ""}</div>
       <div class="card"><h3>Сегодня</h3><div class="stat">
         <div><div class="k">Результат дня</div><div class="v num ${cls(day)}">${sign(day)} $</div></div>
         <div><div class="k">Лучший сегодня</div><div class="v" style="font-size:14px">${bestDay ? `${esc(bestDay.name)} <span class="num ${cls(bestDay.pnl_day)}">${sign(bestDay.pnl_day)}</span>` : "—"}</div></div>

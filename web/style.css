@@ -190,3 +190,5 @@ details.acc[open] .acc-arrow { transform: rotate(90deg); }
 .kind.demote { color: var(--warn); } .kind.weekly, .kind.live_ready { color: var(--btc); }
 
 .kind.head { color: var(--teal, #7cd8ff); }
+
+.acc-name .reason { font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
