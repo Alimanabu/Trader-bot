@@ -251,7 +251,7 @@ class AnalyticsDept:
                  f"итог {t['pnl']:+.2f} $, обоснование: {t['reason'][:80]}" for t in trades[:12]]
         try:
             d = self.client.structured(REVISER_PROMPT, "Худшие сделки недели:\n" + "\n".join(lines) + "\n\nДействующие правила:\n" + rules_text,
-                                       RULE_SCHEMA, max_tokens=1500)
+                                       RULE_SCHEMA, max_tokens=1500, strong=True)
         except LLMUnavailable as e:
             log.warning("ревизор: %s", e)
             return None
@@ -286,7 +286,7 @@ class AnalyticsDept:
         user = (f"Сводка рынка:\n{market}\n\n{_summarize(candles, 24)}\n\nСтатистика компании:\n{company}\n\n"
                 f"Прошлые предложения (pending = ждёт решения, accepted = принято, rejected = отклонено):\n{prior_text}")
         try:
-            d = self.client.structured(STRATEGIST_PROMPT, user, STRATEGY_SCHEMA, max_tokens=3000)
+            d = self.client.structured(STRATEGIST_PROMPT, user, STRATEGY_SCHEMA, max_tokens=3000, strong=True)
         except LLMUnavailable as e:
             log.warning("стратег: %s", e)
             self.j.event("strategist", f"Стратег развития: нейросеть недоступна ({e})", None, ts=ts)

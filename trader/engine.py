@@ -42,7 +42,8 @@ class Engine:
         self.market = market or get_market(settings.market_source)
         self.j = journal or Journal(settings.db_path)
         self.client = client if client is not None else ClaudeClient(
-            settings.anthropic_api_key, settings.llm_model, daily_budget_usd=settings.llm_daily_budget_usd, spend_store=self.j)
+            settings.anthropic_api_key, settings.llm_model, daily_budget_usd=settings.llm_daily_budget_usd, spend_store=self.j,
+            strong_model=settings.llm_model_strong)
         if self.client and self.client.spend_store is None:
             self.client.spend_store = self.j
         self.risk = RiskManager(settings)
@@ -57,6 +58,10 @@ class Engine:
         self.last_poll_ts: int = 0
         self.last_error: str = ""
         self._load()
+        n = self.j.repair_short_pnl()
+        if n:
+            log.info("исправлен итог %d сделок фьючерсных агентов", n)
+            self.j.event("start", f"Починка журнала: у {n} сделок медведей и двусторонних исправлен итог (открытие шорта не считается закрытием лонга)")
         n = self.j.backfill_trade_pnl(settings.fee_rate)
         if n:
             log.info("дописан итог %d старым продажам", n)
@@ -570,7 +575,9 @@ class Engine:
             "last_poll_ts": self.last_poll_ts,
             "max_exposure": self.s.agent_max_exposure,
             "risk_per_trade": self.s.risk_per_trade,
-            "head": {**pol, "senior_weeks": self.s.senior_weeks, "strategist_interval_h": self.s.strategist_interval_h},
+            "head": {**pol, "director": self.director.director(), "senior_weeks": self.s.senior_weeks,
+                     "strategist_interval_h": self.s.strategist_interval_h, "bonus_pct": self.s.director_bonus_pct},
+            "directors_history": self.j.knowledge("director", "retired", limit=10),
             "analysts": self.analytics.stats(),
             "consensus": self.analytics.consensus(now_i),
             "funding_rate": self.j.kv_get("funding_rate", None),
@@ -595,6 +602,9 @@ class Engine:
             },
             "knowledge": self.knowledge_state(),
         }
+
+    def _save_policy_via_director(self, pol: dict) -> None:
+        self.director._save_policy(pol)
 
     def _worst_trades(self, now_i: int, limit: int = 12) -> list[dict]:
         """Худшие закрытые сделки за неделю с контекстом для ревизора."""
@@ -641,6 +651,11 @@ class Engine:
         if not approve:
             if r["kind"] == "proposal" and r["details"].get("knowledge_id"):
                 self.j.set_knowledge_status(int(r["details"]["knowledge_id"]), "rejected")
+            if r["kind"] == "director":                 # владелец оставил директора: даём ещё срок
+                pol = self.director.policy()
+                if pol.get("director"):
+                    pol["director"]["low_weeks"] = 0
+                    self._save_policy_via_director(pol)
             self.j.event("approval", f"Отклонено: {r['title']}")
             return r
         price = self.last_price
@@ -661,6 +676,10 @@ class Engine:
                     a = self.director._create(cand["strategy"], cand["params"], self.agents, ts, "active")
                     self.j.event("hire", f"Нанят {a.name}", a.name, ts=ts)
                     self.agents.append(a)
+        elif r["kind"] == "director":
+            self.director.replace_director(ts, r["details"].get("next_style"))
+            pol = self.director.policy()
+            self.risk.desk_caps = {k: float(v) for k, v in (pol.get("caps") or {}).items()}
         elif r["kind"] == "rule":
             self.director.approve_rule(r["details"], ts)
             self.risk.set_rules(self.j.active_rules())

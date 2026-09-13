@@ -497,3 +497,59 @@ def test_walk_forward_scores_out_of_sample(candles):
     lab = StrategyLab(max_combos=3)
     best = lab.best_params("breakout", candles[-300:])
     assert best.oos_score() is not None
+
+
+def test_backfill_does_not_treat_short_open_as_close():
+    from trader.models import Trade
+    j = Journal(":memory:")
+    j._exec("INSERT INTO agents(name,strategy,params,status,hired_at,cash,btc,peak_equity,day_start_equity,day_key,start_balance) "
+            "VALUES('Медведь X','sma_cross_short','{}','active',1,1000,0,1000,1000,'',1000)")
+    j.trade(Trade(1, "Медведь X", "SELL", 100.0, 1.0, 0.1, "шорт"))      # открытие шорта: итога нет
+    j.trade(Trade(2, "Медведь X", "BUY", 90.0, 1.0, 0.09, "закрыл шорт"))
+    assert j.backfill_trade_pnl() == 0
+    assert j.recent_trades(5)[1]["pnl"] is None
+    # старая ошибка: итог открытия шорта записан как сумма продажи
+    j._exec("UPDATE trades SET pnl=99.9, cost=0 WHERE id=1")
+    assert j.repair_short_pnl() >= 1
+    rows = {t["id"]: t for t in j.recent_trades(5)}
+    assert rows[1]["pnl"] is None
+    assert abs(rows[2]["pnl"] - ((100.0 - 0.1) - 90.0 - 0.09)) < 1e-9
+    assert j.repair_short_pnl() == 0            # второй раз не трогает
+
+
+def test_director_rating_bonus_and_replacement(settings):
+    settings.intern_count = 0
+    settings.director_fail_weeks = 2
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    d0 = eng.head.director()
+    assert d0["number"] == 1 and d0["rating"] == 50 and d0["style"] == "balanced"
+    # хорошая неделя: компания в плюсе → рейтинг растёт, премия положительная
+    for a in eng.agents:
+        if a.status == "active":
+            a.account.cash += 40
+    eng.tick(now=T + 7 * 86400)
+    d1 = eng.head.director()
+    assert d1["rating"] > 50 and d1["bonus"] > 0 and d1["weeks"] == 1
+    # плохие недели подряд → рейтинг ниже 30 две недели → заявка на смену директора
+    pend = []
+    for k in range(2, 12):
+        for a in eng.agents:
+            if a.status == "active":
+                a.account.cash -= 60
+        eng.tick(now=T + k * 7 * 86400)
+        pend = [p for p in eng.j.pending_approvals() if p["kind"] == "director"]
+        if pend:
+            break
+    d2 = eng.head.director()
+    assert d2["rating"] < 30 and d2["bonus"] < d1["bonus"] and d2["low_weeks"] >= 2
+    assert pend and pend[0]["details"]["next_style"] == "aggressive"
+    eng.apply_approval(pend[0]["id"], True)
+    d3 = eng.head.director()
+    assert d3["number"] == 2 and d3["style"] == "aggressive" and d3["rating"] == 50
+    assert eng.j.knowledge("director", "retired")[0]["topic"] == "Директор №1"
+    assert eng.head.alloc() is eng.head.ALLOC_STYLES["aggressive"]
+    st = eng.state()
+    assert st["head"]["director"]["number"] == 2 and st["directors_history"]

@@ -189,10 +189,14 @@ class Journal:
         return self._rows("SELECT * FROM trades WHERE agent=? ORDER BY id", (agent,))
 
     def backfill_trade_pnl(self, fee_rate: float = 0.001) -> int:
-        """Дописать итог (pnl, cost) продажам, записанным до появления этих полей."""
+        """Дописать итог (pnl, cost) продажам спотовых агентов, записанным до появления этих полей.
+        Продажа без открытого лонга (открытие шорта) итога не имеет и не трогается."""
+        futures = self._futures_agents()
         missing = self._rows("SELECT DISTINCT agent FROM trades WHERE side='SELL' AND pnl IS NULL")
         fixed = 0
         for r in missing:
+            if r["agent"] in futures:
+                continue
             qty_held, avg = 0.0, 0.0
             for t in self._rows("SELECT id, side, price, qty, fee, pnl FROM trades WHERE agent=? ORDER BY id", (r["agent"],)):
                 if t["side"] == "BUY":
@@ -200,7 +204,9 @@ class Journal:
                     qty_held += t["qty"]
                     avg = total / qty_held if qty_held else 0.0
                 else:
-                    q = min(t["qty"], qty_held) if qty_held else t["qty"]
+                    if qty_held < 1e-12:
+                        continue
+                    q = min(t["qty"], qty_held)
                     if t["pnl"] is None:
                         pnl = (t["price"] - avg) * q - (t["fee"] or 0.0)
                         self._exec("UPDATE trades SET pnl=?, cost=? WHERE id=?", (pnl, avg * q, t["id"]))
@@ -208,6 +214,58 @@ class Journal:
                     qty_held = max(0.0, qty_held - t["qty"])
                     if qty_held < 1e-12:
                         qty_held, avg = 0.0, 0.0
+        return fixed
+
+    def _futures_agents(self) -> set[str]:
+        return {r["name"] for r in self._rows("SELECT name, strategy FROM agents")
+                if r["strategy"].endswith("_short") or r["strategy"].endswith("_both")}
+
+    def repair_short_pnl(self) -> int:
+        """Разовая починка: у фьючерсных агентов пересчитать итог каждой сделки по позиции со знаком.
+        Открывающие сделки получают пустой итог, закрывающие — реальный заработок."""
+        if self.kv_get("repair_short_pnl_v1"):
+            return 0
+        fixed = 0
+        for name in self._futures_agents():
+            pos, avg = 0.0, 0.0
+            for t in self._rows("SELECT id, side, price, qty, fee, pnl, cost FROM trades WHERE agent=? ORDER BY id", (name,)):
+                fee = t["fee"] or 0.0
+                q = t["qty"]
+                pnl = cost = None
+                if t["side"] == "BUY":
+                    if pos < -1e-12:                       # закрываем шорт
+                        cq = min(q, -pos)
+                        pnl = (avg - t["price"]) * cq - fee * (cq / q)
+                        cost = avg * cq
+                        pos += cq
+                        rest = q - cq
+                        if rest > 1e-12:
+                            avg = t["price"] + fee * (rest / q) / rest
+                            pos += rest
+                    else:
+                        total = avg * pos + t["price"] * q + fee
+                        pos += q
+                        avg = total / pos if pos else 0.0
+                else:
+                    if pos > 1e-12:                        # закрываем лонг
+                        cq = min(q, pos)
+                        pnl = (t["price"] - avg) * cq - fee * (cq / q)
+                        cost = avg * cq
+                        pos -= cq
+                        rest = q - cq
+                        if rest > 1e-12:
+                            avg = t["price"] - fee * (rest / q) / rest
+                            pos -= rest
+                    else:
+                        total = avg * (-pos) + t["price"] * q - fee
+                        pos -= q
+                        avg = total / (-pos) if pos else 0.0
+                if abs(pos) < 1e-12:
+                    pos, avg = 0.0, 0.0
+                if (t["pnl"] is None) != (pnl is None) or (pnl is not None and abs((t["pnl"] or 0) - pnl) > 1e-6):
+                    self._exec("UPDATE trades SET pnl=?, cost=?, pos_after=? WHERE id=?", (pnl, cost, pos, t["id"]))
+                    fixed += 1
+        self.kv_set("repair_short_pnl_v1", 1)
         return fixed
 
     def fees_since(self, ts: int, names: set[str]) -> float:

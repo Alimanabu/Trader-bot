@@ -57,8 +57,16 @@ def is_intern(a: Agent) -> bool:
     return a.status == "intern"
 
 
+DIRECTOR_STYLES = {
+    "balanced": "сбалансированный",
+    "aggressive": "агрессивный",
+    "cautious": "осторожный",
+}
+STYLE_ORDER = ["balanced", "aggressive", "cautious"]
+
+
 class Director:
-    # распределение капитала по режиму рынка: потолок доли для каждого деска
+    # распределение капитала по режиму рынка: потолок доли для каждого деска (стиль «сбалансированный»)
     ALLOC = {
         "balanced": {
             "up": {"bulls": 1.0, "bears": 0.3, "both": 0.8},
@@ -72,6 +80,23 @@ class Director:
         },
     }
 
+    # другие стили директоров: агрессивный держит больше в направлении режима, осторожный меньше везде
+    ALLOC_STYLES = {
+        "balanced": ALLOC,
+        "aggressive": {
+            "balanced": {"up": {"bulls": 1.0, "bears": 0.2, "both": 1.0}, "flat": {"bulls": 0.8, "bears": 0.8, "both": 1.0},
+                         "down": {"bulls": 0.2, "bears": 1.0, "both": 1.0}},
+            "defensive": {"up": {"bulls": 0.7, "bears": 0.2, "both": 0.6}, "flat": {"bulls": 0.5, "bears": 0.5, "both": 0.7},
+                          "down": {"bulls": 0.2, "bears": 0.7, "both": 0.6}},
+        },
+        "cautious": {
+            "balanced": {"up": {"bulls": 0.7, "bears": 0.2, "both": 0.6}, "flat": {"bulls": 0.4, "bears": 0.4, "both": 0.7},
+                         "down": {"bulls": 0.2, "bears": 0.7, "both": 0.6}},
+            "defensive": {"up": {"bulls": 0.5, "bears": 0.1, "both": 0.4}, "flat": {"bulls": 0.3, "bears": 0.3, "both": 0.5},
+                          "down": {"bulls": 0.1, "bears": 0.5, "both": 0.4}},
+        },
+    }
+
     def __init__(self, settings: Settings, journal: Journal, client: ClaudeClient | None = None, team_size: int | None = None):
         self.s = settings
         self.j = journal
@@ -79,6 +104,78 @@ class Director:
         self.desk_size = max(1, (team_size or settings.team_size) // 3)
         self.team_size = self.desk_size * 3
         self.lab = StrategyLab(fee_rate=settings.fee_rate)
+
+    # --- личность директора: стиль, рейтинг, премия ---
+    def new_director(self, number: int, style: str, ts: int) -> dict:
+        return {"number": number, "name": f"Директор №{number}", "style": style, "style_ru": DIRECTOR_STYLES[style],
+                "since_ts": ts, "rating": 50, "bonus": 0.0, "weeks": 0, "low_weeks": 0, "best_rating": 50}
+
+    def director(self) -> dict:
+        pol = self.policy()
+        d = pol.get("director")
+        if not d:
+            d = self.new_director(1, "balanced", int(pol.get("changed_ts") or 0))
+            pol["director"] = d
+            self._save_policy(pol)
+        return d
+
+    def alloc(self) -> dict:
+        style = (self.policy().get("director") or {}).get("style", "balanced")
+        return self.ALLOC_STYLES.get(style, self.ALLOC)
+
+    def rate_week(self, pol: dict, company_pct: float, equal_pct: float, btc_pct: float, pnl: float, equal_pnl: float, ts: int) -> dict:
+        """Рейтинг 0–100 и премия директора по итогам недели.
+
+        Рейтинг: +10 если распределение лучше равного (иначе −10), +10 если компания в плюсе (иначе −10),
+        +5 если компания не хуже биткоина (иначе −5).
+        Премия: director_bonus_pct % от прибыли недели плюс столько же от выигрыша над равным распределением
+        (только в прибыльную неделю); при убытке штраф в половину ставки. Премия виртуальная: из капитала
+        компании не вычитается, это счёт мотивации.
+        """
+        d = pol.get("director") or self.new_director(1, "balanced", ts)
+        delta = (10 if company_pct >= equal_pct - 1e-9 else -10) + (10 if company_pct > 0 else -10) + (5 if company_pct >= btc_pct else -5)
+        d["rating"] = int(max(0, min(100, d.get("rating", 50) + delta)))
+        d["best_rating"] = max(d.get("best_rating", 50), d["rating"])
+        rate = self.s.director_bonus_pct / 100.0
+        bonus = 0.0
+        if pnl > 0:
+            bonus += rate * pnl
+            if pnl - equal_pnl > 0:                 # премия за распределение только в прибыльную неделю
+                bonus += rate * (pnl - equal_pnl)
+        if pnl < 0:
+            bonus -= rate / 2 * (-pnl)
+        d["bonus"] = round(d.get("bonus", 0.0) + bonus, 2)
+        d["bonus_week"] = round(bonus, 2)
+        d["weeks"] = d.get("weeks", 0) + 1
+        d["low_weeks"] = d.get("low_weeks", 0) + 1 if d["rating"] < 30 else 0
+        d["rating_delta"] = delta
+        pol["director"] = d
+        if d["low_weeks"] >= self.s.director_fail_weeks and not any(p["kind"] == "director" for p in self.j.pending_approvals()):
+            nxt = STYLE_ORDER[(STYLE_ORDER.index(d["style"]) + 1) % len(STYLE_ORDER)] if d["style"] in STYLE_ORDER else "balanced"
+            self.j.request_approval("director", f"{d['name']} ({d['style_ru']}): рейтинг {d['rating']} уже {d['low_weeks']} нед. Сменить директора?",
+                                    {"number": d["number"], "next_style": nxt, "next_style_ru": DIRECTOR_STYLES[nxt], "rating": d["rating"], "bonus": d["bonus"]}, ts=ts)
+        return d
+
+    def replace_director(self, ts: int, next_style: str | None = None) -> dict:
+        """Смена директора: старый уходит в базу знаний, новый приходит со своим стилем и рейтингом 50."""
+        pol = self.policy()
+        old = pol.get("director") or self.new_director(1, "balanced", ts)
+        style = next_style or STYLE_ORDER[(STYLE_ORDER.index(old["style"]) + 1) % len(STYLE_ORDER)]
+        self.j.add_knowledge(ts, "director", old["name"],
+                             f"{old['name']} ({old['style_ru']}) работал {max(0, (ts - old['since_ts']) // 86400)} дн., {old.get('weeks', 0)} нед.; "
+                             f"итоговый рейтинг {old['rating']}, лучший {old.get('best_rating', old['rating'])}, премия {old['bonus']:+.2f} $",
+                             "смена директора", {**old, "left_ts": ts}, status="retired")
+        new = self.new_director(old["number"] + 1, style, ts)
+        pol["director"] = new
+        pol["mode"] = "balanced"
+        pol["fail_weeks"] = 0
+        pol["good_weeks"] = 0
+        regime = pol.get("regime", "flat")
+        pol["caps"] = dict(self.ALLOC_STYLES[style]["balanced"].get(regime, self.ALLOC_STYLES[style]["balanced"]["flat"]))
+        self._save_policy(pol)
+        self.j.event("head", f"Смена директора: {old['name']} ({old['style_ru']}, рейтинг {old['rating']}) уходит, "
+                             f"приходит {new['name']} ({new['style_ru']}). База знаний, память и правила остаются в компании", None, new, ts=ts)
+        return new
 
     # --- политика директора ---
     def policy(self) -> dict:
@@ -130,6 +227,7 @@ class Director:
 
     def daily_policy(self, candles: list[Candle], ts: int, consensus: dict | None = None) -> dict:
         """Оценить рынок и распределить капитал между десками."""
+        self.director()
         pol = self.policy()
         if not self.s.head_policy:
             pol.update({"caps": {k: 1.0 for k in DESK_KEYS}, "regime": "off"})
@@ -137,7 +235,7 @@ class Director:
             return pol
         rule = self.assess_regime(candles)
         regime, source = self.combine(rule, consensus)
-        caps = dict(self.ALLOC[pol["mode"]][regime])
+        caps = dict(self.alloc()[pol["mode"]][regime])
         memory_adj = self.memory_adjust(caps, regime)
         if regime != pol.get("regime") or caps != pol.get("caps"):
             desc = ", ".join(f"{DESKS[k]['label'].lower()} {caps[k]:.0%}" for k in DESK_KEYS)
@@ -206,7 +304,9 @@ class Director:
     def company_summary(self, agents: list[Agent], price: float, analysts: list[dict], ts: int) -> str:
         """Сводка для стратега развития: дески, память, аналитики, правила."""
         pol = self.policy()
-        lines = [f"Режим рынка сейчас: {REGIME_RU.get(pol.get('regime'), '?')}, подход {pol.get('mode')}, потолки {pol.get('caps')}."]
+        d = pol.get("director") or {}
+        lines = [f"Режим рынка сейчас: {REGIME_RU.get(pol.get('regime'), '?')}, подход {pol.get('mode')}, потолки {pol.get('caps')}. "
+                 f"{d.get('name', 'Директор')} ({d.get('style_ru', '')}): рейтинг {d.get('rating', 50)}, премия {d.get('bonus', 0):+.2f} $ за {d.get('weeks', 0)} нед."]
         for w in (pol.get("weeks") or [])[-4:]:
             lines.append(f"Неделя {datetime.fromtimestamp(w['ts'], tz=timezone.utc):%d.%m}: компания {w['dept']:+.2f}%, равное распределение {w.get('equal', 0):+.2f}%, "
                          f"биткоин {w['btc']:+.2f}%, дески " + ", ".join(f"{k} {v['pct']:+.2f}%" for k, v in (w.get("desks") or {}).items()))
@@ -286,8 +386,11 @@ class Director:
             pol["mode"] = "balanced"
             notes.append("две недели в плюсе: возвращаю обычный подход")
         regime = pol.get("regime", "flat")
-        pol["caps"] = dict(self.ALLOC[pol["mode"]][regime]) if self.s.head_policy and regime in self.ALLOC[pol["mode"]] else {k: 1.0 for k in DESK_KEYS}
+        table = self.alloc()[pol["mode"]]
+        pol["caps"] = dict(table[regime]) if self.s.head_policy and regime in table else {k: 1.0 for k in DESK_KEYS}
         pol["week_caps"] = dict(pol["caps"])
+        d = self.rate_week(pol, company_pct, equal_pct, btc_pct, pnl, equal_pnl, ts)
+        notes.append(f"рейтинг директора {d['rating']} ({d['rating_delta']:+d}), премия за неделю {d['bonus_week']:+.2f} $, всего {d['bonus']:+.2f} $")
         self._save_policy(pol)
         self.j.event("head", "Отчёт директора за неделю: " + "; ".join(notes), None, pol, ts=ts)
         return pol
@@ -630,7 +733,7 @@ class Director:
                     "Тебе дают дневную сводку по трейдерам и стажёрам. "
                     "Напиши короткий отчёт для владельца: что произошло, кто лучший, кто худший, что рекомендуешь. "
                     "Рекомендации должны быть конкретными и проверяемыми.",
-                    text, REPORT_SCHEMA, max_tokens=2000)
+                    text, REPORT_SCHEMA, max_tokens=2000, strong=True)
                 self.j.event("report", data["summary"], None, data, ts=ts)
                 return
             except LLMUnavailable as e:

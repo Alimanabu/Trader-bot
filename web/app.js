@@ -230,7 +230,16 @@
     const weeks = (h.weeks || []).slice(-6).reverse();
     const c = s.consensus || {};
     const winRate = h.alloc_weeks ? Math.round((h.alloc_wins / h.alloc_weeks) * 100) : null;
-    return `<div class="card"><h3>Директор</h3><div class="stat">
+    const d = h.director || {};
+    const rating = d.rating ?? 50;
+    const hist = s.directors_history || [];
+    const tenure = d.since_ts ? Math.max(0, Math.floor((Date.now() / 1000 - d.since_ts) / 86400)) : 0;
+    return `<div class="card"><h3>Директор</h3>
+      <div class="dirhead"><div><b>${esc(d.name || "Директор")}</b> <span class="pill">${esc(d.style_ru || "сбалансированный")}</span><div class="note num">в должности ${tenure} дн. · ${d.weeks || 0} нед. оценено</div></div>
+        <div class="dirbonus num"><span>заработал</span><b class="${cls(d.bonus)}">${sign(d.bonus || 0)} $</b>${d.bonus_week != null ? `<small class="${cls(d.bonus_week)}">${sign(d.bonus_week)} $ за неделю</small>` : ""}</div></div>
+      <div class="rating"><div class="rbar"><i class="${rating >= 70 ? "good" : rating < 30 ? "bad" : ""}" style="width:${rating}%"></i></div><b class="num ${rating >= 70 ? "up" : rating < 30 ? "down" : ""}">${rating}</b><span class="note">рейтинг${d.rating_delta != null ? ` (${d.rating_delta > 0 ? "+" : ""}${d.rating_delta} за неделю)` : ""}${d.low_weeks ? ` · ниже 30 уже ${d.low_weeks} нед.` : ""}</span></div>
+      <div class="note">Рейтинг от 0 до 100, старт 50. Каждую неделю: +10 если распределение капитала лучше равного (иначе −10), +10 если компания в плюсе (иначе −10), +5 если не хуже биткоина (иначе −5). Премия: ${fmt(h.bonus_pct ?? 10, 0)}% от прибыли недели и столько же от выигрыша над равным распределением, при убытке штраф в половину ставки. Премия виртуальная, из капитала не вычитается. Рейтинг ниже 30 две недели подряд: вам предлагают сменить директора, новый приходит со своим стилем, а база знаний, память и правила остаются в компании.</div>
+      <div class="stat" style="margin-top:10px">
         <div><div class="k">Подход</div><div class="v" style="font-size:15px">${h.mode === "defensive" ? "защитный" : "обычный"}</div></div>
         <div><div class="k">Режим рынка</div><div class="v" style="font-size:15px">${REG[h.regime] || "—"}</div><div class="note">${h.source ? esc(h.source) : ""}${h.rule_regime && h.rule_regime !== h.regime ? ` · по правилам ${REG[h.rule_regime]}` : ""}</div></div>
         <div><div class="k">Голос аналитиков</div><div class="v" style="font-size:15px">${c.fresh ? `${REG[c.regime]} <span class="muted num" style="font-size:12px">${fmt((c.strength || 0) * 100, 0)}%</span>` : "нет свежих"}</div></div>
@@ -240,7 +249,8 @@
       </div>
       <div class="caps">${Object.keys(DESK).map((k) => `<div><span>${DESK[k]}</span><div class="capbar d-${k}"><i style="width:${Math.round((caps[k] ?? 1) * 100)}%"></i></div><b class="num">${fmt((caps[k] ?? 1) * 100, 0)}%</b></div>`).join("")}</div>
       <div class="note" style="margin-top:8px">Директор отвечает за результат: каждый день оценивает рынок по своим правилам и голосам аналитиков и распределяет капитал между десками. Каждую неделю его распределение сравнивается с равным («если бы всем дали 100%»), а компания с «держать доллары» и «держать биткоин». Две недели подряд хуже долларов, и он переходит на защитный подход и переобучает всех.</div>
-      ${weeks.length ? `<div class="tbl" style="margin-top:8px"><table><tr><th>Неделя</th><th class="r">Компания</th><th class="r">Равное</th><th class="r">Биткоин</th><th class="r">Быки</th><th class="r">Медведи</th><th class="r">Двуст.</th></tr>${weeks.map((w) => `<tr><td>${date(w.ts)}</td><td class="r num ${cls(w.dept)}">${sign(w.dept, 2)}%</td><td class="r num ${cls(w.equal)}">${w.equal == null ? "—" : sign(w.equal, 2) + "%"}</td><td class="r num ${cls(w.btc)}">${sign(w.btc, 2)}%</td>${["bulls", "bears", "both"].map((k) => `<td class="r num ${cls(w.desks?.[k]?.pct)}">${w.desks?.[k] ? sign(w.desks[k].pct, 2) + "%" : "—"}</td>`).join("")}</tr>`).join("")}</table></div>` : '<div class="note" style="margin-top:6px">Первое недельное сравнение появится в понедельник.</div>'}</div>`;
+      ${weeks.length ? `<div class="tbl" style="margin-top:8px"><table><tr><th>Неделя</th><th class="r">Компания</th><th class="r">Равное</th><th class="r">Биткоин</th><th class="r">Быки</th><th class="r">Медведи</th><th class="r">Двуст.</th></tr>${weeks.map((w) => `<tr><td>${date(w.ts)}</td><td class="r num ${cls(w.dept)}">${sign(w.dept, 2)}%</td><td class="r num ${cls(w.equal)}">${w.equal == null ? "—" : sign(w.equal, 2) + "%"}</td><td class="r num ${cls(w.btc)}">${sign(w.btc, 2)}%</td>${["bulls", "bears", "both"].map((k) => `<td class="r num ${cls(w.desks?.[k]?.pct)}">${w.desks?.[k] ? sign(w.desks[k].pct, 2) + "%" : "—"}</td>`).join("")}</tr>`).join("")}</table></div>` : '<div class="note" style="margin-top:6px">Первое недельное сравнение появится в понедельник.</div>'}
+      ${hist.length ? `<h3 style="margin-top:14px">Прежние директора</h3><ul class="kb">${hist.map((r) => `<li>${esc(r.text)}</li>`).join("")}</ul>` : ""}</div>`;
   }
   function analyticsHTML(s) {
     const list = s.analysts || [];
@@ -371,6 +381,7 @@
       let extra = "";
       if (p.kind === "rule") extra = `<div class="note">${esc(d.rationale || "")}${d.expected_effect ? ` Ожидаемый эффект: ${esc(d.expected_effect)}` : ""}</div>`;
       if (p.kind === "proposal") extra = `<div class="note"><span class="pill">${PK[d.kind] || d.kind}</span> ${esc(d.details || "")}${d.expected_effect ? `<br>Ожидаемый эффект: ${esc(d.expected_effect)}` : ""}</div>`;
+      if (p.kind === "director") extra = `<div class="note">Новый директор будет ${esc(d.next_style_ru || "")}. Память, правила и база знаний остаются. Отклонить = дать нынешнему ещё две недели.</div>`;
       return `<div class="card approval"><div style="min-width:0;flex:1"><b>Нужно ваше решение</b><div>${esc(p.title)}</div>${extra}<div class="note">${time(p.ts)}${d.intern ? ` · ${esc(d.intern)}` : ""}${d.pnl != null ? ` · ${sign(d.pnl)} $` : ""}${d.streak_weeks ? ` · ${d.streak_weeks} нед. в плюсе` : ""}</div></div>
       <div class="actions"><button class="btn primary" data-id="${p.id}" data-d="approve">${p.kind === "proposal" ? "Принять" : "Одобрить"}</button><button class="btn" data-id="${p.id}" data-d="reject">Отклонить</button></div></div>`;
     }).join("");

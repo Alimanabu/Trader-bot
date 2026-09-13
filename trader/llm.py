@@ -42,8 +42,9 @@ def estimate_cost(model: str, usage) -> float:
 
 class ClaudeClient:
     def __init__(self, api_key: str | None, model: str = "claude-opus-5", effort: str = "medium",
-                 daily_budget_usd: float = 0.0, spend_store=None):
+                 daily_budget_usd: float = 0.0, spend_store=None, strong_model: str = ""):
         self.model = model
+        self.strong_model = strong_model or model     # для редких важных вызовов: стратег, ревизор, отчёт директора
         self.effort = effort
         self._client = None
         self._fallbacks_supported = True
@@ -90,8 +91,8 @@ class ClaudeClient:
         if self.daily_budget and self._spend_usd >= self.daily_budget:
             raise LLMUnavailable(f"дневной бюджет нейросети {self.daily_budget:.2f} $ исчерпан ({self._spend_usd:.2f} $), ждём завтра")
 
-    def _account(self, response) -> None:
-        cost = estimate_cost(self.model, getattr(response, "usage", None))
+    def _account(self, response, model: str | None = None) -> None:
+        cost = estimate_cost(model or self.model, getattr(response, "usage", None))
         self._load_spend()
         self._spend_usd += cost
         self._calls += 1
@@ -99,15 +100,16 @@ class ClaudeClient:
             self.spend_store.kv_set(f"llm_spend:{self._spend_day}", {"usd": self._spend_usd, "calls": self._calls})
         log.info("LLM-вызов: %.4f $, за день %.4f $ (%d вызовов)", cost, self._spend_usd, self._calls)
 
-    def structured(self, system: str, user: str, schema: dict[str, Any], max_tokens: int = 4000) -> dict[str, Any]:
-        """Запрос с гарантированным JSON-ответом по схеме."""
+    def structured(self, system: str, user: str, schema: dict[str, Any], max_tokens: int = 4000, strong: bool = False) -> dict[str, Any]:
+        """Запрос с гарантированным JSON-ответом по схеме. strong=True → сильная модель (если задана)."""
         if not self._client:
             raise LLMUnavailable("ANTHROPIC_API_KEY не задан")
         self._check_budget()
         import anthropic
 
+        model = self.strong_model if strong else self.model
         kwargs: dict[str, Any] = dict(
-            model=self.model,
+            model=model,
             max_tokens=max_tokens,
             system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user}],
@@ -137,7 +139,7 @@ class ClaudeClient:
         except anthropic.APIStatusError as e:
             self._fail(f"ошибка API {e.status_code}: {e.message}")
 
-        self._account(response)
+        self._account(response, model)
         self.last_error = ""
         if response.stop_reason == "refusal":
             details = getattr(response, "stop_details", None)
@@ -150,22 +152,23 @@ class ClaudeClient:
         except json.JSONDecodeError as e:
             raise LLMUnavailable(f"ответ не является JSON: {e}") from e
 
-    def search_summary(self, system: str, user: str, max_searches: int = 3, max_tokens: int = 4000) -> str:
+    def search_summary(self, system: str, user: str, max_searches: int = 3, max_tokens: int = 4000, strong: bool = False) -> str:
         """Запрос с серверным веб-поиском. Возвращает итоговый текст модели."""
         if not self._client:
             raise LLMUnavailable("ANTHROPIC_API_KEY не задан")
         self._check_budget()
         import anthropic
 
+        model = self.strong_model if strong else self.model
         messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
         tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": max_searches}]
         try:
             for _ in range(4):
                 response = self._client.messages.create(
-                    model=self.model, max_tokens=max_tokens, system=system, messages=messages,
+                    model=model, max_tokens=max_tokens, system=system, messages=messages,
                     tools=tools, thinking={"type": "adaptive"}, output_config={"effort": "low"},
                 )
-                self._account(response)
+                self._account(response, model)
                 if response.stop_reason == "pause_turn":
                     messages.append({"role": "assistant", "content": response.content})
                     continue

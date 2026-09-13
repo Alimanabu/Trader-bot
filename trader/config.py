@@ -46,6 +46,9 @@ class Settings:
     dept_daily_loss_limit: float = 0.02
     auto_hire: bool = True
     llm_model: str = "claude-opus-5"
+    llm_model_strong: str = ""             # сильная модель для редких важных вызовов (стратег, ревизор, отчёт директора); пусто = та же
+    director_fail_weeks: int = 2           # недель подряд с рейтингом ниже 30 → предложение сменить директора
+    director_bonus_pct: float = 10.0       # премия директора: % от недельной прибыли компании сверх равного распределения
     db_path: str = "data/trader.db"
     port: int = 8080
     panel_password: str = ""
@@ -105,6 +108,9 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         dept_daily_loss_limit=float(env.get("DEPT_DAILY_LOSS_LIMIT", "0.02")),
         auto_hire=_bool(env.get("AUTO_HIRE"), True),
         llm_model=env.get("LLM_MODEL", "claude-opus-5"),
+        llm_model_strong=env.get("LLM_MODEL_STRONG", ""),
+        director_fail_weeks=int(env.get("DIRECTOR_FAIL_WEEKS", "2")),
+        director_bonus_pct=float(env.get("DIRECTOR_BONUS_PCT", "10")),
         db_path=env.get("DB_PATH", "data/trader.db"),
         port=int(env.get("PORT", "8080")),
         panel_password=env.get("PANEL_PASSWORD", ""),
