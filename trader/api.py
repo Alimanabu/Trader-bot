@@ -93,10 +93,15 @@ def create_app(engine: Engine | None = None, start_scheduler: bool = True) -> Fa
 
     @app.get("/api/families")
     def families():
-        from .agents.registry import STRATEGY_FAMILIES, family_label
-        return [{"family": f, "label": family_label(f), "description": cls.description,
-                 "llm": cls.family.startswith("llm_"), "params": cls.default_params()}
-                for f, cls in STRATEGY_FAMILIES.items()]
+        from .agents.registry import STRATEGY_FAMILIES, SIDED_FAMILIES, family_label, build_strategy
+        out = [{"family": f, "label": family_label(f), "description": cls.description,
+                "llm": cls.family.startswith("llm_"), "params": cls.default_params(), "side": "long"}
+               for f, cls in STRATEGY_FAMILIES.items()]
+        for f in SIDED_FAMILIES:
+            st = build_strategy(f)
+            out.append({"family": f, "label": family_label(f), "description": st.description, "llm": False,
+                        "params": st.params, "side": st.side})
+        return out
 
     @app.get("/api/candles")
     def candles(limit: int = 200):

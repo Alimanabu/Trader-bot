@@ -25,8 +25,9 @@ class Action(str, Enum):
 class Signal:
     """Решение агента на одной свече.
 
-    target_exposure — какую долю капитала агент хочет держать в BTC (0..1).
-    Спот без плеча, поэтому доля не может быть больше 1 и не может быть отрицательной.
+    target_exposure — какую долю капитала агент хочет держать в BTC: от -1 (шорт на всё)
+    до 1 (лонг на всё). Спотовые стратегии дают только 0..1, отрицательные значения возможны
+    лишь у стратегий фьючерсного демо-режима.
     """
     action: Action
     target_exposure: float
@@ -35,7 +36,7 @@ class Signal:
     meta: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        self.target_exposure = min(1.0, max(0.0, float(self.target_exposure)))
+        self.target_exposure = min(1.0, max(-1.0, float(self.target_exposure)))
         self.confidence = min(1.0, max(0.0, float(self.confidence)))
 
 
@@ -48,8 +49,9 @@ class Trade:
     qty: float
     fee: float
     reason: str
-    pnl: float | None = None     # результат продажи в $ (для BUY нет)
-    cost: float | None = None    # стоимость проданного по цене входа, чтобы считать %
+    pnl: float | None = None     # результат закрытия позиции в $ (у открывающей сделки нет)
+    cost: float | None = None    # стоимость закрытого по цене входа, чтобы считать %
+    pos_after: float = 0.0       # позиция после сделки (BTC, отрицательная = шорт)
 
 
 @dataclass

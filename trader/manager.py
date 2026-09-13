@@ -196,7 +196,7 @@ class DepartmentHead:
     def _create(self, family: str, params: dict, existing: list[Agent], ts: int, status: str) -> Agent:
         name = self._unique_name(family, existing)
         strat = build_strategy(family, params, self.client)
-        agent = Agent(name=name, strategy=strat, account=new_account(self.s, name), hired_at=ts, status=status)
+        agent = Agent(name=name, strategy=strat, account=new_account(self.s, name, allow_short=strat.side != "long"), hired_at=ts, status=status)
         self.j.save_agent(agent)
         return agent
 
@@ -221,8 +221,9 @@ class DepartmentHead:
         return added
 
     def best_intern(self, agents: list[Agent], price: float, min_days: int = 0) -> Agent | None:
-        pool = [a for a in agents if is_intern(a) and (price and (a.last_price or price))]
-        pool = [a for a in pool if a.hired_at and (min_days == 0 or True)]
+        pool = [a for a in agents if is_intern(a)]
+        # только что переведённые в котята отбывают испытательный срок: минимум неделю не возвращаем
+        pool = [a for a in pool if not (a.trial_weeks > 0 and self._days(a) < 7)]
         seasoned = [a for a in pool if self._days(a) >= min_days]
         if not seasoned:
             return None

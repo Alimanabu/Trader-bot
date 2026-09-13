@@ -49,7 +49,7 @@ class Settings:
     panel_password: str = ""
     history_candles: int = 800
     bench_size: int = 30
-    team_size: int = 11
+    team_size: int = 17
     intern_count: int = 20
     llm_min_interval_min: int = 60     # нейро-агент не может просить будить себя чаще (защита от расходов)
     llm_max_interval_min: int = 360
@@ -96,7 +96,7 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         panel_password=env.get("PANEL_PASSWORD", ""),
         history_candles=int(env.get("HISTORY_CANDLES", "800")),
         bench_size=int(env.get("BENCH_SIZE", "30")),
-        team_size=int(env.get("TEAM_SIZE", "11")),
+        team_size=int(env.get("TEAM_SIZE", "17")),
         intern_count=int(env.get("INTERN_COUNT", "20")),
         llm_min_interval_min=int(env.get("LLM_MIN_INTERVAL_MIN", "60")),
         llm_max_interval_min=int(env.get("LLM_MAX_INTERVAL_MIN", "360")),

@@ -35,12 +35,13 @@ class RiskManager:
         return min(0.10, max(0.005, self.s.stop_atr_mult * atr_pct))
 
     def size(self, desired: float, atr_pct: float) -> float:
-        """Размер позиции: желание стратегии × доля, при которой потеря до стопа = risk_per_trade,
-        и не больше потолка agent_max_exposure."""
+        """Размер позиции со знаком: желание стратегии × доля, при которой потеря до стопа = risk_per_trade,
+        и не больше потолка agent_max_exposure (по модулю; шорт отрицательный)."""
         dist = self.stop_distance(atr_pct)
         by_risk = self.s.risk_per_trade / dist if dist > 0 else 1.0
         cap = min(self.s.agent_max_exposure, self.policy_cap)
-        return max(0.0, min(cap, desired * min(1.0, by_risk)))
+        mag = min(cap, abs(desired) * min(1.0, by_risk))
+        return max(0.0, mag) * (1 if desired >= 0 else -1)
 
     def check_department(self, agents: list[Agent], price: float, day_key: str) -> tuple[bool, str]:
         active = [a for a in agents if a.status in {"active", "paused"}]
@@ -57,7 +58,8 @@ class RiskManager:
 
     def check_agent(self, agent: Agent, signal: Signal, price: float, atr_pct: float = 0.01) -> RiskVerdict:
         eq = agent.equity(price)
-        target = self.size(max(0.0, signal.target_exposure), atr_pct)
+        desired = signal.target_exposure if agent.account.allow_short else max(0.0, signal.target_exposure)
+        target = self.size(desired, atr_pct)
         if agent.status == "fired":
             return RiskVerdict(False, 0.0, "агент уволен", fire=False)
         dd = agent.drawdown(price)
@@ -70,7 +72,7 @@ class RiskManager:
         if agent.status == "paused":
             return RiskVerdict(False, 0.0, "агент на паузе до конца дня")
         if abs(target - signal.target_exposure) > 1e-9:
-            if self.policy_cap < min(1.0, self.s.agent_max_exposure) and abs(target - self.policy_cap * min(1.0, signal.target_exposure)) < 1e-9:
+            if self.policy_cap < min(1.0, self.s.agent_max_exposure) and abs(abs(target) - self.policy_cap * min(1.0, abs(signal.target_exposure))) < 1e-9:
                 return RiskVerdict(True, target, f"потолок руководителя {self.policy_cap:.0%} по режиму рынка")
             return RiskVerdict(True, target, f"размер по риску: {target:.0%} (стоп {self.stop_distance(atr_pct)*100:.1f}%)")
         return RiskVerdict(True, target, "ok")

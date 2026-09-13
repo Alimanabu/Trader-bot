@@ -192,3 +192,9 @@ details.acc[open] .acc-arrow { transform: rotate(90deg); }
 .kind.head { color: var(--teal, #7cd8ff); }
 
 .acc-name .reason { font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+
+.state.short { color: var(--down); }
+.short { color: var(--down); }
+.bar.short > i { background: var(--down); }
+.pill.bear { background: rgba(255,107,107,.15); color: var(--down); font-weight: 500; }
+.pill.both { background: rgba(124,216,255,.15); color: #7cd8ff; font-weight: 500; }

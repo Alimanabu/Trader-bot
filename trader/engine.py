@@ -68,12 +68,12 @@ class Engine:
         for r in rows:
             strat = build_strategy(r["strategy"], json.loads(r["params"]), self.client)
             acc = PaperAccount(owner=r["name"], cash=r["cash"], btc=r["btc"], fee_rate=self.s.fee_rate,
-                               slippage_rate=self.s.slippage_rate)
+                               slippage_rate=self.s.slippage_rate, allow_short=strat.side != "long")
             acc.realized_pnl = r["realized_pnl"]
             acc._avg_entry = r["avg_entry"]
             # сделки только текущего «срока»: после перевода в команду или в стажёры счёт начинается заново
             acc.trades = [Trade(t["ts"], t["agent"], t["side"], t["price"], t["qty"], t["fee"], t["reason"] or "",
-                                pnl=t.get("pnl"), cost=t.get("cost"))
+                                pnl=t.get("pnl"), cost=t.get("cost"), pos_after=float(t.get("pos_after") or 0.0))
                           for t in self.j.trades_for(r["name"]) if t["ts"] >= int(r["hired_at"] or 0)]
             a = Agent(name=r["name"], strategy=strat, account=acc, status=r["status"], hired_at=r["hired_at"],
                       peak_equity=r["peak_equity"], day_start_equity=r["day_start_equity"], day_key=r["day_key"],
@@ -95,7 +95,7 @@ class Engine:
             if family in known:
                 continue
             strat = build_strategy(family, None, self.client)
-            a = Agent(name=name, strategy=strat, account=new_account(self.s, name))
+            a = Agent(name=name, strategy=strat, account=new_account(self.s, name, allow_short=strat.side != "long"))
             a.last_price = self.last_price
             self.agents.append(a)
             self.j.save_agent(a)
@@ -146,22 +146,29 @@ class Engine:
         return (a / tail[-1].close) if a and tail[-1].close else 0.01
 
     def _after_trade(self, a: Agent, trade, price: float, atr_pct: float) -> None:
-        """После сделки: выставить или снять стоп-лосс."""
-        if a.account.btc <= 0:
+        """После сделки: выставить или снять стоп-лосс (для шорта стоп выше входа)."""
+        pos = a.account.btc
+        if abs(pos) < 1e-12:
             a.stop_price = 0.0
-        elif trade is not None and trade.side == "BUY":
+        elif trade is not None:
             entry = a.account._avg_entry or price
-            a.stop_price = entry * (1 - self.risk.stop_distance(atr_pct))
+            dist = self.risk.stop_distance(atr_pct)
+            if pos > 0 and trade.side == "BUY":
+                a.stop_price = entry * (1 - dist)
+            elif pos < 0 and trade.side == "SELL":
+                a.stop_price = entry * (1 + dist)
 
     def _check_stops(self, alive: list[Agent], price: float, now_i: int) -> list[str]:
         """Каждую минуту: если цена ушла ниже стопа, закрыть позицию и дать агенту паузу перед новым входом."""
         hit = []
         for a in alive:
-            if a.account.btc > 0 and a.stop_price and price <= a.stop_price:
+            pos = a.account.btc
+            triggered = a.stop_price and ((pos > 0 and price <= a.stop_price) or (pos < 0 and price >= a.stop_price))
+            if triggered:
                 t = a.account.flatten(price, now_i, f"стоп-лосс {a.stop_price:.0f}")
                 if t:
                     self.j.trade(t)
-                    self.j.decision(now_i, a.name, a.strategy.family, "SELL", 0.0, 1.0, f"стоп-лосс: цена {price:.0f} ниже {a.stop_price:.0f}",
+                    self.j.decision(now_i, a.name, a.strategy.family, t.side, 0.0, 1.0, f"стоп-лосс: цена {price:.0f} {'ниже' if pos > 0 else 'выше'} {a.stop_price:.0f}",
                                     price, a.equity(price), True, None, trade=t, exposure_before=a.account.exposure(price))
                     self.j.equity(now_i, a.name, a.equity(price), price)
                     self.j.event("stop", f"{a.name}: сработал стоп-лосс на {a.stop_price:.0f}", a.name, ts=now_i)
@@ -280,6 +287,8 @@ class Engine:
                 a.next_check_ts = now_i + 60
 
         if new_candle:
+            for a in alive:
+                a.account.apply_funding(price, 1.0)
             self.learner.after_tick(self.agents, candles)
             self.head.review(self.agents, price, now_i)     # ежедневный разбор до найма: освободившиеся места займут сразу
         hired = self.head.hire_if_needed(self.agents, candles, now_i)
@@ -319,7 +328,8 @@ class Engine:
             self.head.drop_intern(a, price, ts, f"просадка {a.drawdown(price)*100:.1f}%")
             return
         exp_before = a.account.exposure(price)
-        sized = self.risk.size(sig.target_exposure, atr_pct)
+        desired = sig.target_exposure if a.account.allow_short else max(0.0, sig.target_exposure)
+        sized = self.risk.size(desired, atr_pct)
         t = a.account.rebalance(sized, price, ts, sig.reason)
         if t:
             self.j.trade(t)

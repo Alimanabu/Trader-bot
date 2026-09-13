@@ -87,7 +87,7 @@ class Journal:
             if col not in cols:
                 self._conn.execute(f"ALTER TABLE agents ADD COLUMN {col} {ddl}")
         tcols = {r[1] for r in self._conn.execute("PRAGMA table_info(trades)").fetchall()}
-        for col in ("pnl", "cost"):
+        for col in ("pnl", "cost", "pos_after"):
             if col not in tcols:
                 self._conn.execute(f"ALTER TABLE trades ADD COLUMN {col} REAL")
         dcols = {r[1] for r in self._conn.execute("PRAGMA table_info(decisions)").fetchall()}
@@ -126,8 +126,9 @@ class Journal:
         return cur.lastrowid
 
     def trade(self, t) -> None:
-        self._exec("INSERT INTO trades(ts,agent,side,price,qty,fee,reason,pnl,cost) VALUES(?,?,?,?,?,?,?,?,?)",
-                   (t.ts, t.agent, t.side, t.price, t.qty, t.fee, t.reason, getattr(t, "pnl", None), getattr(t, "cost", None)))
+        self._exec("INSERT INTO trades(ts,agent,side,price,qty,fee,reason,pnl,cost,pos_after) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   (t.ts, t.agent, t.side, t.price, t.qty, t.fee, t.reason, getattr(t, "pnl", None), getattr(t, "cost", None),
+                    getattr(t, "pos_after", 0.0)))
 
     def equity(self, ts, agent, equity, price) -> None:
         self._exec("INSERT OR REPLACE INTO equity(ts,agent,equity,price) VALUES(?,?,?,?)", (ts, agent, equity, price))

@@ -1,6 +1,7 @@
 """Бумажный (демо) счёт. Реальные котировки, виртуальные деньги.
 
-Спот, без плеча: агент может держать от 0% до 100% капитала в BTC.
+Спот: доля BTC от 0 до 100% капитала. Фьючерсный демо-режим (allow_short=True): позиция может быть
+и отрицательной (шорт), но не больше 100% капитала по модулю, без плеча.
 """
 from __future__ import annotations
 
@@ -13,95 +14,131 @@ from .models import Trade
 class PaperAccount:
     owner: str
     cash: float
-    btc: float = 0.0
+    btc: float = 0.0                 # позиция в BTC; отрицательная = шорт
     fee_rate: float = 0.001
     slippage_rate: float = 0.0002
     min_order_usd: float = 10.0
     min_rebalance_frac: float = 0.05   # не дёргаться из-за перекоса меньше 5% капитала
+    allow_short: bool = False
+    funding_rate_8h: float = 0.0001    # ставка финансирования фьючерсов: 0.01% за 8 часов от размера позиции
     trades: list[Trade] = field(default_factory=list)
     realized_pnl: float = 0.0
+    funding_paid: float = 0.0
     _avg_entry: float = 0.0
 
     def equity(self, price: float) -> float:
         return self.cash + self.btc * price
 
     def exposure(self, price: float) -> float:
+        """Доля капитала в позиции: от -1 (шорт на всё) до 1 (лонг на всё)."""
         eq = self.equity(price)
         return 0.0 if eq <= 0 else (self.btc * price) / eq
 
     def rebalance(self, target_exposure: float, price: float, ts: int, reason: str = "") -> Trade | None:
-        """Довести долю BTC в портфеле до target_exposure (0..1). Возвращает сделку или None."""
-        target_exposure = min(1.0, max(0.0, target_exposure))
+        """Довести долю позиции до target_exposure. Возвращает сделку или None."""
+        lo = -1.0 if self.allow_short else 0.0
+        target_exposure = min(1.0, max(lo, target_exposure))
         eq = self.equity(price)
         if eq <= 0:
             return None
-        target_btc_value = eq * target_exposure
-        current_value = self.btc * price
-        delta = target_btc_value - current_value
+        delta = eq * target_exposure - self.btc * price
         if abs(delta) < max(self.min_order_usd, eq * self.min_rebalance_frac):
             return None
         if delta > 0:
             return self._buy(delta, price, ts, reason)
         return self._sell(-delta, price, ts, reason)
 
+    # --- исполнение ---
     def _buy(self, usd: float, price: float, ts: int, reason: str) -> Trade | None:
         fill = price * (1 + self.slippage_rate)
-        usd = min(usd, self.cash / (1 + self.fee_rate))
+        # покупка либо закрывает шорт (не требует наличных сверх залога), либо открывает/увеличивает лонг
+        if self.btc >= 0:
+            usd = min(usd, self.cash / (1 + self.fee_rate))
         if usd < self.min_order_usd:
             return None
         qty = usd / fill
         fee = usd * self.fee_rate
-        # в цену входа включаем комиссию покупки, чтобы итог продажи был честным результатом всего круга
-        total_cost = self._avg_entry * self.btc + fill * qty + fee
-        self.btc += qty
-        self._avg_entry = total_cost / self.btc if self.btc else 0.0
-        self.cash -= usd + fee
-        t = Trade(ts, self.owner, "BUY", fill, qty, fee, reason)
+        pnl = cost = None
+        if self.btc < 0:                                   # закрываем шорт (полностью или частично)
+            close_qty = min(qty, -self.btc)
+            pnl = (self._avg_entry - fill) * close_qty - fee * (close_qty / qty)
+            cost = self._avg_entry * close_qty
+            self.realized_pnl += pnl
+            self.btc += close_qty
+            rest = qty - close_qty
+            self.cash -= close_qty * fill + fee * (close_qty / qty)
+            if rest * fill >= self.min_order_usd:           # остаток открывает лонг (мелочь не открываем)
+                self._avg_entry = fill + fee * (rest / qty) / rest
+                self.btc += rest
+                self.cash -= rest * fill + fee * (rest / qty)
+            elif abs(self.btc) < 1e-12:
+                self.btc, self._avg_entry = 0.0, 0.0
+        else:
+            total_cost = self._avg_entry * self.btc + fill * qty + fee   # комиссия входа в цене входа
+            self.btc += qty
+            self._avg_entry = total_cost / self.btc if self.btc else 0.0
+            self.cash -= usd + fee
+        t = Trade(ts, self.owner, "BUY", fill, qty, fee, reason, pnl=pnl, cost=cost, pos_after=self.btc)
         self.trades.append(t)
         return t
 
     def _sell(self, usd: float, price: float, ts: int, reason: str) -> Trade | None:
         fill = price * (1 - self.slippage_rate)
-        qty = min(usd / fill, self.btc)
-        if qty * fill < self.min_order_usd and qty < self.btc:
-            return None
-        if qty <= 0:
+        qty = usd / fill
+        if not self.allow_short:
+            qty = min(qty, self.btc)
+            if qty * fill < self.min_order_usd and qty < self.btc:
+                return None
+        else:
+            # без плеча: |позиция| после продажи не больше капитала
+            max_short_qty = max(0.0, (self.equity(price) / fill) + self.btc)
+            qty = min(qty, max(0.0, self.btc) + max_short_qty)
+        if qty <= 0 or qty * fill < self.min_order_usd:
             return None
         proceeds = qty * fill
         fee = proceeds * self.fee_rate
-        pnl = (fill - self._avg_entry) * qty - fee
-        cost = self._avg_entry * qty
-        self.realized_pnl += pnl
-        self.btc -= qty
-        if self.btc < 1e-12:
-            self.btc = 0.0
-            self._avg_entry = 0.0
-        self.cash += proceeds - fee
-        t = Trade(ts, self.owner, "SELL", fill, qty, fee, reason, pnl=pnl, cost=cost)
+        pnl = cost = None
+        if self.btc > 0:                                   # закрываем лонг (полностью или частично)
+            close_qty = min(qty, self.btc)
+            pnl = (fill - self._avg_entry) * close_qty - fee * (close_qty / qty)
+            cost = self._avg_entry * close_qty
+            self.realized_pnl += pnl
+            self.btc -= close_qty
+            self.cash += close_qty * fill - fee * (close_qty / qty)
+            rest = qty - close_qty
+            if rest * fill >= self.min_order_usd and self.allow_short:   # остаток открывает шорт (мелочь не открываем)
+                self._avg_entry = fill - fee * (rest / qty) / rest
+                self.btc -= rest
+                self.cash += rest * fill - fee * (rest / qty)
+            elif abs(self.btc) < 1e-12:
+                self.btc, self._avg_entry = 0.0, 0.0
+        else:                                              # открываем/увеличиваем шорт
+            total = self._avg_entry * (-self.btc) + fill * qty - fee    # комиссия входа в цене входа шорта
+            self.btc -= qty
+            self._avg_entry = total / (-self.btc) if self.btc else 0.0
+            self.cash += proceeds - fee
+        t = Trade(ts, self.owner, "SELL", fill, qty, fee, reason, pnl=pnl, cost=cost, pos_after=self.btc)
         self.trades.append(t)
         return t
 
     def flatten(self, price: float, ts: int, reason: str = "flatten") -> Trade | None:
-        if self.btc <= 0:
+        if abs(self.btc) < 1e-12:
             return None
-        return self._sell(self.btc * price * 2, price, ts, reason)
+        if self.btc > 0:
+            return self._sell(self.btc * price * 2, price, ts, reason)
+        return self._buy(-self.btc * price * (1 + self.slippage_rate), price, ts, reason)
+
+    def apply_funding(self, price: float, hours: float = 1.0) -> float:
+        """Ставка финансирования фьючерсов за прошедшие часы (только в режиме allow_short)."""
+        if not self.allow_short or abs(self.btc) < 1e-12:
+            return 0.0
+        charge = abs(self.btc) * price * self.funding_rate_8h * hours / 8.0
+        self.cash -= charge
+        self.funding_paid += charge
+        return charge
 
     def win_rate(self) -> float:
-        """Доля прибыльных продаж (грубая оценка по сделкам SELL)."""
-        sells = [t for t in self.trades if t.side == "SELL"]
-        if not sells:
+        closes = [t for t in self.trades if t.pnl is not None]
+        if not closes:
             return 0.0
-        wins = 0
-        avg = 0.0
-        qty_held = 0.0
-        for t in self.trades:
-            if t.side == "BUY":
-                avg = (avg * qty_held + t.price * t.qty) / (qty_held + t.qty) if qty_held + t.qty else t.price
-                qty_held += t.qty
-            else:
-                if t.price > avg:
-                    wins += 1
-                qty_held = max(0.0, qty_held - t.qty)
-                if qty_held == 0:
-                    avg = 0.0
-        return wins / len(sells)
+        return sum(1 for t in closes if t.pnl > 0) / len(closes)

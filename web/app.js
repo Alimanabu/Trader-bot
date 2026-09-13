@@ -77,9 +77,13 @@
   function tradeLine(t) {
     const who = `<b>${esc(t.agent)}</b>${t.kind === "intern" ? ' <span class="dim">(котёнок)</span>' : ""}`;
     const stop = /стоп-лосс/i.test(t.reason || "") ? ' <span class="tag sell">стоп-лосс</span>' : "";
-    if (t.side === "BUY") return `<li><time>${hhmm(t.ts)}</time><span>${who} <span class="up">купил</span> <span class="num">${btc(t.qty)}</span> по <span class="num">${fmt(t.price, 0)} $</span></span></li>`;
-    const res = t.pnl == null ? ' · <span class="dim">итог не записан</span>' : ` · итог <b class="num ${cls(t.pnl)}">${sign(t.pnl)} $${t.pnl_pct != null ? ` (${sign(t.pnl_pct, 2)}%)` : ""}</b>`;
-    return `<li><time>${hhmm(t.ts)}</time><span>${who} <span class="down">продал</span> <span class="num">${btc(t.qty)}</span> по <span class="num">${fmt(t.price, 0)} $</span>${res}${stop}</span></li>`;
+    const res = t.pnl == null ? "" : ` · итог <b class="num ${cls(t.pnl)}">${sign(t.pnl)} $${t.pnl_pct != null ? ` (${sign(t.pnl_pct, 2)}%)` : ""}</b>`;
+    const after = t.pos_after || 0;
+    let verb;
+    if (t.side === "BUY") verb = t.pnl != null ? '<span class="up">закрыл шорт</span>' : '<span class="up">купил</span>';
+    else verb = after < -1e-9 && t.pnl == null ? '<span class="short">открыл шорт</span>' : '<span class="down">продал</span>';
+    const tail = t.side === "SELL" && t.pnl == null && after >= -1e-9 ? ' · <span class="dim">итог не записан</span>' : "";
+    return `<li><time>${hhmm(t.ts)}</time><span>${who} ${verb} <span class="num">${btc(t.qty)}</span> по <span class="num">${fmt(t.price, 0)} $</span>${res}${tail}${stop}</span></li>`;
   }
   function tradesHTML(s) {
     const all = s.trades_24h || [];
@@ -96,14 +100,15 @@
 
   function allocHTML(s) {
     const team = s.agents.filter((a) => a.status !== "fired");
-    const btcv = team.reduce((x, a) => x + a.equity * a.exposure, 0);
+    const btcv = team.reduce((x, a) => x + a.equity * Math.max(0, a.exposure), 0);
+    const shortv = team.reduce((x, a) => x + a.equity * Math.max(0, -a.exposure), 0);
     const total = team.reduce((x, a) => x + a.equity, 0) || 1;
     const usdt = total - btcv;
     const r = 52, c = 2 * Math.PI * r, pb = btcv / total;
     const rows = [...team].sort((a, b) => b.equity - a.equity).map((a) => `
-      <div class="row link" data-name="${esc(a.name)}"><i style="background:${a.exposure > 0 ? "var(--btc)" : "var(--usdt)"}"></i>
+      <div class="row link" data-name="${esc(a.name)}"><i style="background:${a.exposure > 0 ? "var(--btc)" : a.exposure < 0 ? "var(--down)" : "var(--usdt)"}"></i>
         <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.name)}</span>
-        <b class="num">${fmt(a.equity, 0)} $</b><span class="pct num">${fmt(a.exposure * 100, 0)}% в BTC</span></div>`).join("");
+        <b class="num">${fmt(a.equity, 0)} $</b><span class="pct num">${a.exposure < 0 ? "шорт " + fmt(-a.exposure * 100, 0) + "%" : fmt(a.exposure * 100, 0) + "% в BTC"}</span></div>`).join("");
     return `<div class="card fade"><h3>Распределение капитала</h3>
       <div class="alloc">
         <svg viewBox="0 0 130 130" role="img" aria-label="Доля BTC и USDT">
@@ -115,6 +120,7 @@
         <div class="rows">
           <div class="row"><i style="background:var(--btc)"></i><span>В биткоине</span><b class="num">${fmt(btcv, 0)} $</b><span class="pct num">${fmt(pb * 100, 1)}%</span></div>
           <div class="row"><i style="background:var(--usdt)"></i><span>В долларах (USDT)</span><b class="num">${fmt(usdt, 0)} $</b><span class="pct num">${fmt((1 - pb) * 100, 1)}%</span></div>
+          ${shortv > 0 ? `<div class="row"><i style="background:var(--down)"></i><span>Открыто в шорт</span><b class="num">${fmt(shortv, 0)} $</b><span class="pct num">${fmt((shortv / total) * 100, 1)}%</span></div>` : ""}
           <div class="note" style="margin-top:4px">По котам (оранжевая точка: сейчас держит BTC):</div>
           ${rows}
         </div></div></div>`;
@@ -139,7 +145,7 @@
     const nextIn = a.next_decision_ts ? Math.max(0, Math.round((a.next_decision_ts - Date.now() / 1000) / 60)) : null;
     return `<details class="acc ${a.status}" data-name="${nameShort}">
       <summary>
-        <div class="acc-name">${catSVG(a.name, isIntern ? "intern" : "team", 36)}<div><b>${nameShort}</b><span class="state ${llmBroken(a) ? "fired" : a.status !== "active" && a.status !== "intern" ? a.status : a.exposure > 0 ? "inpos" : "wait"}">${llmBroken(a) ? "ошибка нейросети" : a.status === "paused" ? "пауза" : a.status === "fired" ? "уволен" : a.status === "dropped" ? "отчислен" : a.exposure > 0 ? `в BTC ${fmt(a.exposure * 100, 0)}%` : a.decided_at ? `ждёт сигнала · ${hhmm(a.decided_at)}` : "ещё не решал"}</span><span class="reason">${esc(a.last_reason || "")}</span></div></div>
+        <div class="acc-name">${catSVG(a.name, isIntern ? "intern" : "team", 36)}<div><b>${nameShort}${/_short$/.test(a.strategy) ? ' <span class="pill bear">медведь</span>' : /_both$/.test(a.strategy) ? ' <span class="pill both">обе стороны</span>' : ""}</b><span class="state ${llmBroken(a) ? "fired" : a.status !== "active" && a.status !== "intern" ? a.status : a.exposure > 0 ? "inpos" : a.exposure < 0 ? "short" : "wait"}">${llmBroken(a) ? "ошибка нейросети" : a.status === "paused" ? "пауза" : a.status === "fired" ? "уволен" : a.status === "dropped" ? "отчислен" : a.exposure > 0 ? `лонг ${fmt(a.exposure * 100, 0)}%` : a.exposure < 0 ? `шорт ${fmt(-a.exposure * 100, 0)}%` : a.decided_at ? `ждёт сигнала · ${hhmm(a.decided_at)}` : "ещё не решал"}</span><span class="reason">${esc(a.last_reason || "")}</span></div></div>
         <div class="acc-badges">${a.live_ready ? '<span class="pill gold">готов к реальным</span>' : ""}${a.trial_weeks ? `<span class="pill">испытание · ${a.trial_weeks}-я нед.</span>` : ""}${!isIntern && a.streak_weeks > 0 ? `<span class="pill green">серия ${a.streak_weeks} нед.</span>` : ""}</div>
         <div class="acc-time num" title="Как часто агент смотрит на рынок">${a.strategy.startsWith("llm_") ? "сам" : a.cadence_minutes >= 60 ? "1 ч" : a.cadence_minutes + " м"}</div>
         <div class="acc-pnl num ${cls(a.pnl_24h)}">${sign(a.pnl_24h)} $<small>24 ч</small></div>
@@ -151,7 +157,7 @@
         <div class="kv">
           <div><span>Капитал</span><b class="num">${fmt(a.equity)} $</b></div>
           <div><span>Сегодня</span><b class="num ${cls(a.pnl_day)}">${sign(a.pnl_day)} $</b></div>
-          <div><span>В BTC</span><b class="num">${fmt(a.exposure * 100, 0)}%</b></div>
+          <div><span>Позиция</span><b class="num">${a.exposure < 0 ? "шорт " + fmt(-a.exposure * 100, 0) + "%" : fmt(a.exposure * 100, 0) + "% в BTC"}</b></div>
           <div><span>Просадка</span><b class="num">${fmt(a.drawdown * 100, 1)}%</b></div>
           <div><span>Сделок · побед</span><b class="num">${a.trades} · ${fmt(a.win_rate * 100, 0)}%</b></div>
           <div><span>${isIntern ? "На стажировке" : "В команде"}</span><b class="num">${a.days} дн.</b></div>
@@ -163,7 +169,7 @@
           ${a.stop_price ? `<div><span>Стоп-лосс</span><b class="num down">${fmt(a.stop_price, 0)} $</b></div>` : ""}
           ${a.alert_above || a.alert_below ? `<div><span>Будильники по цене</span><b class="num">${a.alert_above ? "выше " + fmt(a.alert_above, 0) : ""}${a.alert_above && a.alert_below ? " · " : ""}${a.alert_below ? "ниже " + fmt(a.alert_below, 0) : ""}</b></div>` : ""}
         </div>
-        <div class="bar"><i style="width:${Math.round(a.exposure * 100)}%"></i></div>
+        <div class="bar ${a.exposure < 0 ? "short" : ""}"><i style="width:${Math.round(Math.abs(a.exposure) * 100)}%"></i></div>
         <div class="last"><span class="tag">${ACTION[a.last_action] || "—"}</span> ${esc(a.last_reason || "решений ещё не было")}</div>
         <div style="margin-top:8px"><button class="btn open-agent" data-name="${nameShort}">Открыть карточку и журнал</button></div>
       </div>
@@ -188,7 +194,7 @@
     const fired = s.agents.filter((a) => a.status === "fired");
     const sorted = [...alive].sort((a, b) => b.pnl_total - a.pnl_total);
     return `<h2 class="sec">Коты · основная команда · ${alive.length} из ${s.team_size}</h2>
-      <div class="note" style="margin-bottom:8px">Каждый кот торгует своими 1000 $ по своей теории и сам решает, как часто смотреть на рынок: колонка «Ритм». По понедельникам ротация: минус за неделю отправляет в котята, три недели в плюсе подряд дают статус «готов к реальным». ${(s.risk_per_trade || 1) < 1 ? `Размер позиции считается от риска: на одной сделке кот может потерять не больше ${fmt(s.risk_per_trade * 100, 0)}% капитала до стоп-лосса.` : "Размер позиции задаёт сама стратегия, потолок " + fmt((s.max_exposure || 1) * 100, 0) + "% капитала."} У каждой позиции есть стоп-лосс, он проверяется каждую минуту.</div>
+      <div class="note" style="margin-bottom:8px">Каждый кот торгует своими 1000 $ по своей теории и сам решает, как часто смотреть на рынок: колонка «Ритм». Обычные коты покупают только на рост (спот). «Медведи» ставят только на падение, «двусторонние» и на рост, и на падение: они торгуют на фьючерсном демосчёте без плеча, со стопом и ставкой финансирования. По понедельникам ротация: минус за неделю отправляет в котята, три недели в плюсе подряд дают статус «готов к реальным». ${(s.risk_per_trade || 1) < 1 ? `Размер позиции считается от риска: на одной сделке кот может потерять не больше ${fmt(s.risk_per_trade * 100, 0)}% капитала до стоп-лосса.` : "Размер позиции задаёт сама стратегия, потолок " + fmt((s.max_exposure || 1) * 100, 0) + "% капитала."} У каждой позиции есть стоп-лосс, он проверяется каждую минуту.</div>
       <div class="card list"><div class="acc-head"><span>Агент</span><span>Ритм</span><span>За 24 ч</span><span>За всё время</span><span></span></div>${sorted.map((a) => agentRow(a)).join("")}</div>
       ${fired.length ? `<h2 class="sec">Уволенные · ${fired.length}</h2><div class="card list">${fired.map((a) => agentRow(a)).join("")}</div>` : ""}`;
   }
@@ -231,7 +237,7 @@
       <div style="margin-top:10px"><button class="btn" id="btn-research">Запустить исследование</button></div></div>
       <div class="card"><h3>Кандидаты (лучшие по бэктесту)</h3>${bench.length ? `<div class="tbl"><table><tr><th>Семейство</th><th>Параметры</th><th class="r">Доход</th><th class="r">Просадка</th><th class="r">Оценка</th></tr>` +
         bench.map((b) => `<tr><td>${esc(b.strategy)}</td><td>${Object.entries(b.params).map(([k, v]) => `<span class="tag">${k}=${v}</span>`).join("")}</td><td class="r num ${cls(b.stats.return_pct)}">${sign(b.stats.return_pct, 1)}%</td><td class="r num">${fmt(b.stats.max_drawdown_pct, 1)}%</td><td class="r num">${fmt(b.score, 1)}</td></tr>`).join("") + "</table></div>" : `<div class="note">Кандидаты появятся после исследования.</div>`}</div>
-      <div class="card"><h3>Библиотека стратегий</h3><div class="tbl"><table>${fam.map((f) => `<tr><td><b>${esc(f.label)}</b>${f.llm ? ' <span class="badge intern">нейросеть</span>' : ""}<div class="note">${esc(f.description)}</div></td></tr>`).join("")}</table></div></div>
+      <div class="card"><h3>Библиотека стратегий · ${fam.length}</h3><div class="tbl"><table>${fam.map((f) => `<tr><td><b>${esc(f.label)}</b>${f.llm ? ' <span class="badge intern">нейросеть</span>' : ""}${f.side === "short" ? ' <span class="pill bear">медведь</span>' : f.side === "both" ? ' <span class="pill both">обе стороны</span>' : ""}<div class="note">${esc(f.description)}</div></td></tr>`).join("")}</table></div></div>
       <div class="card"><h3>Журнал обучения</h3><ul class="events">${eventsHTML(ev) || '<li class="muted">пока пусто</li>'}</ul></div>`;
   }
 

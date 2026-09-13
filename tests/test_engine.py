@@ -21,8 +21,10 @@ def hours(eng, market, n):
 
 def test_engine_creates_department(settings):
     eng, _ = make_engine(settings)
-    assert len(eng.agents) == 11
+    assert len(eng.agents) == settings.team_size == 17
     assert all(a.status == "active" for a in eng.agents)
+    assert sum(1 for a in eng.agents if a.strategy.side == "short") == 3
+    assert sum(1 for a in eng.agents if a.strategy.side == "both") == 3
 
 
 def test_tick_records_decisions_and_skips_duplicate(settings):
@@ -30,7 +32,7 @@ def test_tick_records_decisions_and_skips_duplicate(settings):
     last = market.candles("BTCUSDT", "1h", 1)[-1]
     T = last.ts + 3600 + 5
     res = eng.tick(now=T)
-    assert res["ok"] and len(res["decisions"]) == 11
+    assert res["ok"] and len(res["decisions"]) == 17
     assert len(res["interns_added"]) == settings.intern_count
     eng.tick(now=T + 30)            # стажёры принимают первые решения
     again = eng.tick(now=T + 40)
@@ -38,9 +40,9 @@ def test_tick_records_decisions_and_skips_duplicate(settings):
     market.advance(1)
     res2 = eng.tick(now=T + 3600)
     # новостник с веб-поиском проверяет рынок не чаще раза в 4 часа, остальные десять успели
-    assert res2["ok"] and not res2.get("skipped") and len(res2["decisions"]) == 10
+    assert res2["ok"] and not res2.get("skipped") and len(res2["decisions"]) == 16
     team_decisions = [d for d in eng.j.recent_decisions(None, 500) if d["agent"] in {a.name for a in eng.agents if a.status == "active"}]
-    assert len(team_decisions) == 21    # первый проход + часовая контрольная запись
+    assert len(team_decisions) == 33    # первый проход + часовая контрольная запись
 
 
 def test_state_persists_between_engines(settings):
@@ -72,7 +74,7 @@ def test_team_size_stays_ten_after_firing(settings):
     team = [a for a in eng.agents if a.status in {"active", "paused"}]
     fired = [a for a in eng.agents if a.status == "fired"]
     assert fired, "ожидались увольнения"
-    assert len(team) == 11
+    assert len(team) == settings.team_size
     kinds = {e["kind"] for e in eng.j.recent_events(500)}
     assert {"fire", "hire", "research", "intern"} <= kinds
 
@@ -113,7 +115,7 @@ def test_interns_shadow_and_new_default_agent_backfilled(settings):
     st = eng.state()
     assert len(st["interns"]) == 5
     assert all(a["status"] != "intern" for a in st["agents"])
-    assert st["department"]["start"] == 11 * settings.agent_start_balance
+    assert st["department"]["start"] == settings.team_size * settings.agent_start_balance
     # имитируем появление нового штатного семейства: удаляем запись из БД и перезагружаем
     db._exec("DELETE FROM agents WHERE strategy='llm_news'")
     eng2 = Engine(settings, market=market, journal=db, client=ClaudeClient(None))
@@ -141,7 +143,7 @@ def test_weekly_rotation(settings):
     res = eng.tick(now=T + 7 * 86400)
     w = res["weekly"]
     assert worst.name in w["demoted"] and worst.status == "intern" and worst.trial_weeks == 1
-    assert intern.name in w["promoted"] and intern.status == "active" and abs(intern.equity(eng.last_price) - settings.agent_start_balance) < 1e-6
+    assert intern.name in w["promoted"] and intern.status == "active" and abs(intern.start_balance() - settings.agent_start_balance) < 1e-6
     assert streaky.name in w["live_ready"] and streaky.live_ready and streaky.streak_weeks == 3
     assert loser_intern.name in w["dropped"] and loser_intern.status == "dropped"
     assert any(p["kind"] == "live" and p["details"]["agent"] == streaky.name for p in eng.j.pending_approvals())
@@ -271,6 +273,7 @@ def test_idle_interns_are_dropped_and_replaced(settings):
     for a in interns:
         a.account.trades = []
         a.hired_at = T - 4 * 86400
+        a.next_check_ts = T + 10 * 86400      # чтобы на этом проходе они не успели сделать сделку
     eng.j.kv_set("review_day", "")
     market.advance(1)
     eng.tick(now=T + 3600)
@@ -286,3 +289,22 @@ def test_research_limits_same_family(candles):
     res = lab.research(candles[-300:], families=["breakout", "keltner"], top_n=6)
     fams = [r.family for r in res]
     assert fams.count("breakout") <= 2 and fams.count("keltner") <= 2
+
+
+def test_short_stop_loss_above_entry(settings):
+    settings.intern_count = 0
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    bear = next(a for a in eng.agents if a.strategy.side == "short")
+    bear.account.flatten(eng.last_price, T, "тест")
+    t = bear.account.rebalance(-1.0, eng.last_price, T, "тест шорт")
+    assert t and t.side == "SELL" and bear.account.btc < 0
+    eng._after_trade(bear, t, eng.last_price, eng._atr_pct(eng.last_candles))
+    assert bear.stop_price > eng.last_price
+    eng.market.price = lambda symbol: bear.stop_price * 1.01
+    res = eng.tick(now=T + 60)
+    assert bear.name in res["stops"] and abs(bear.account.btc) < 1e-9
+    closing = bear.account.trades[-1]
+    assert closing.side == "BUY" and closing.pnl is not None and closing.pnl < 0

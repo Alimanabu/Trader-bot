@@ -7,7 +7,7 @@ import random
 from dataclasses import dataclass, asdict
 
 from .agents.base import Strategy
-from .agents.registry import STRATEGY_FAMILIES, build_strategy
+from .agents.registry import STRATEGY_FAMILIES, SIDED_FAMILIES, build_strategy, family_base
 from .agents.rules import RULE_STRATEGIES
 from .models import Candle
 from .paper import PaperAccount
@@ -30,7 +30,7 @@ class BacktestResult:
 
 def backtest(strategy: Strategy, candles: list[Candle], start_balance: float = 1000.0,
              fee_rate: float = 0.001, window: int = 300) -> BacktestResult:
-    acc = PaperAccount(owner="bt", cash=start_balance, fee_rate=fee_rate)
+    acc = PaperAccount(owner="bt", cash=start_balance, fee_rate=fee_rate, allow_short=getattr(strategy, "side", "long") != "long")
     warm = max(strategy.warmup(), 2)
     equities: list[float] = []
     peak = start_balance
@@ -60,6 +60,7 @@ def backtest(strategy: Strategy, candles: list[Candle], start_balance: float = 1
 
 
 def grid(family: str, max_combos: int = 12, seed: int = 7) -> list[dict]:
+    family, _side = family_base(family)
     cls = STRATEGY_FAMILIES[family]
     g = cls.param_grid()
     if not g:
@@ -74,6 +75,7 @@ def grid(family: str, max_combos: int = 12, seed: int = 7) -> list[dict]:
 
 
 def _valid(family: str, p: dict) -> bool:
+    family, _ = family_base(family)
     if family == "sma_cross":
         return p["fast"] < p["slow"]
     if family == "macd":
@@ -96,7 +98,7 @@ class StrategyLab:
     def research(self, candles: list[Candle], families: list[str] | None = None, top_n: int = 5,
                  exclude: set[str] | None = None) -> list[BacktestResult]:
         """exclude — ключи "семейство|params" уже работающих агентов, их не предлагаем повторно."""
-        families = families or [s.family for s in RULE_STRATEGIES]
+        families = families or self.families_count()
         results: list[BacktestResult] = []
         for fam in families:
             for params in grid(fam, self.max_combos):
@@ -118,7 +120,7 @@ class StrategyLab:
         return picked
 
     def families_count(self) -> list[str]:
-        return [s.family for s in RULE_STRATEGIES]
+        return [s.family for s in RULE_STRATEGIES] + list(SIDED_FAMILIES)
 
     def best_params(self, family: str, candles: list[Candle]) -> BacktestResult:
         best: BacktestResult | None = None

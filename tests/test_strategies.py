@@ -47,3 +47,26 @@ def test_llm_budget_blocks_calls():
     assert c2.spend_today()["usd"] == 1.5 and c2.spend_today()["calls"] == 3
     with _pt.raises(LLMUnavailable):
         c2._check_budget()
+
+
+def test_sided_wrapper_maps_signals(candles):
+    from trader.agents.registry import build_strategy
+    from trader.models import Action
+    bear = build_strategy("sma_cross_short")
+    both = build_strategy("sma_cross_both")
+    base = build_strategy("sma_cross")
+    b = base.decide(candles, {"exposure": 0.0})
+    s1 = bear.decide(candles, {"exposure": 0.0})
+    s2 = both.decide(candles, {"exposure": 0.0})
+    if b.action == Action.SELL:
+        assert s1.target_exposure == -1.0 and s2.target_exposure == -1.0
+    elif b.action == Action.BUY:
+        assert s1.target_exposure == 0.0 and s2.target_exposure > 0
+    assert bear.side == "short" and both.side == "both" and bear.family == "sma_cross_short"
+
+
+def test_backtest_runs_for_sided_families(candles):
+    from trader.research import backtest
+    from trader.agents.registry import build_strategy
+    r = backtest(build_strategy("supertrend_short"), candles[-300:])
+    assert r.bars > 0 and r.family == "supertrend_short"

@@ -14,7 +14,7 @@ def test_api_state_and_tick(settings):
         r = c.post("/api/tick")
         assert r.status_code == 200 and r.json()["ok"]
         st = c.get("/api/state").json()
-        assert st["mode"] == "paper" and len(st["agents"]) == 11
+        assert st["mode"] == "paper" and len(st["agents"]) == 17
         assert "interns" in st
         name = st["agents"][0]["name"]
         d = c.get(f"/api/agents/{name}").json()

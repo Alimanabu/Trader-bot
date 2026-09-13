@@ -36,3 +36,31 @@ def test_flatten():
     acc.flatten(100.0, 2)
     assert acc.btc == 0.0
     assert abs(acc.cash - 1000) < 1e-6
+
+
+def test_short_round_trip_and_flip():
+    acc = PaperAccount("s", cash=1000, fee_rate=0.001, slippage_rate=0.0, allow_short=True)
+    t = acc.rebalance(-1.0, 100.0, 1)
+    assert t.side == "SELL" and acc.btc < 0 and t.pos_after < 0 and t.pnl is None
+    assert acc.equity(90.0) > 1000            # шорт зарабатывает на падении
+    t2 = acc.rebalance(0.0, 90.0, 2)
+    assert t2.side == "BUY" and t2.pnl is not None and t2.pnl > 0 and abs(acc.btc) < 1e-9
+    assert abs(t2.pnl - (acc.equity(90.0) - 1000)) < 1e-6
+    # разворот из шорта в лонг одной сделкой
+    acc.rebalance(-1.0, 100.0, 3)
+    t3 = acc.rebalance(1.0, 100.0, 4)
+    assert t3.side == "BUY" and acc.btc > 0 and t3.pnl is not None
+    # без плеча: модуль позиции не больше капитала
+    assert abs(acc.exposure(100.0)) <= 1.01
+
+
+def test_spot_account_cannot_short():
+    acc = PaperAccount("l", cash=1000, fee_rate=0.0, slippage_rate=0.0)
+    assert acc.rebalance(-1.0, 100.0, 1) is None and acc.btc == 0
+
+
+def test_funding_only_for_futures_accounts():
+    f = PaperAccount("f", cash=1000, allow_short=True); f.rebalance(-1.0, 100.0, 1)
+    assert f.apply_funding(100.0, 8.0) > 0
+    l = PaperAccount("l", cash=1000); l.rebalance(1.0, 100.0, 1)
+    assert l.apply_funding(100.0, 8.0) == 0.0

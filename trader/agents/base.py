@@ -16,6 +16,7 @@ class Strategy(ABC):
     """
     family: str = "abstract"
     description: str = ""
+    side: str = "long"     # long (спот, только рост) | short (только падение) | both (обе стороны)
 
     def __init__(self, params: dict | None = None):
         self.params = {**self.default_params(), **(params or {})}
