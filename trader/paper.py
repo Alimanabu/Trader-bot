@@ -78,9 +78,16 @@ class PaperAccount:
             self.btc += qty
             self._avg_entry = total_cost / self.btc if self.btc else 0.0
             self.cash -= usd + fee
+        self._sweep_dust(fill)
         t = Trade(ts, self.owner, "BUY", fill, qty, fee, reason, pnl=pnl, cost=cost, pos_after=self.btc)
         self.trades.append(t)
         return t
+
+    def _sweep_dust(self, price: float) -> None:
+        """Остаток позиции меньше доллара не считается позицией: переводим в деньги по текущей цене."""
+        if 1e-12 < abs(self.btc) * price < 1.0:
+            self.cash += self.btc * price
+            self.btc, self._avg_entry = 0.0, 0.0
 
     def _sell(self, usd: float, price: float, ts: int, reason: str) -> Trade | None:
         fill = price * (1 - self.slippage_rate)
@@ -117,6 +124,7 @@ class PaperAccount:
             self.btc -= qty
             self._avg_entry = total / (-self.btc) if self.btc else 0.0
             self.cash += proceeds - fee
+        self._sweep_dust(fill)
         t = Trade(ts, self.owner, "SELL", fill, qty, fee, reason, pnl=pnl, cost=cost, pos_after=self.btc)
         self.trades.append(t)
         return t

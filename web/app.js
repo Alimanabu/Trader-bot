@@ -24,7 +24,7 @@
   const TABS = ["home", "desks", "interns", "company", "reports"];
   let state = null, tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "home", equityData = null, summary = null, families = null, range = "all";
   const openRows = new Set();
-  let showInternTrades = false, showLibrary = false;
+  let showInternTrades = false, showInternPos = false, showLibrary = false;
   const TZ = "Asia/Almaty";   // Астана, UTC+5
   const astanaTime = (d) => d.toLocaleTimeString("ru-RU", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
   const hhmm = (ts) => (ts ? astanaTime(new Date(ts * 1000)) : "—");
@@ -105,6 +105,29 @@
       ${list.length ? `<ul class="tlog">${list.slice(0, 60).map(tradeLine).join("")}</ul>` : ""}</div>`;
   }
 
+  // ---------- монитор открытых позиций ----------
+  const dur = (h) => (h == null ? "—" : h < 1 ? `${Math.round(h * 60)} мин` : h < 48 ? `${fmt(h, 1)} ч` : `${fmt(h / 24, 1)} дн.`);
+  function positionLine(p) {
+    const sideTag = p.side === "long" ? '<span class="pill desk-bulls">лонг</span>' : '<span class="pill desk-bears">шорт</span>';
+    const stop = p.stop ? `стоп <span class="num">${fmt(p.stop, 0)} $</span> <span class="dim num">(${sign(p.stop_pct, 1)}%)</span>` : '<span class="dim">без стопа</span>';
+    return `<li class="pos"><div class="phead">${avatar({ name: p.agent, desk: p.desk }, 30)}<div class="pname"><b>${esc(p.agent)}</b>${p.kind === "intern" ? ' <span class="dim">(стажёр)</span>' : ""} ${sideTag}<div class="dim num">${fmt(p.exposure * 100, 0)}% капитала · ${btc(p.qty)} · ${fmt(p.notional, 0)} $</div></div>
+        <div class="pres num"><b class="${cls(p.upnl)}">${sign(p.upnl)} $</b><small class="${cls(p.upnl_pct)}">${sign(p.upnl_pct, 2)}%</small></div></div>
+      <div class="pbody num">вход <b>${fmt(p.entry, 0)} $</b> · сейчас <b>${fmt(p.price, 0)} $</b> · ${stop} · в сделке ${dur(p.hours)}</div>
+      ${p.reason ? `<div class="pbody dim">${esc(p.reason)}</div>` : ""}</li>`;
+  }
+  function positionsHTML(s) {
+    const all = s.positions || [];
+    const list = showInternPos ? all : all.filter((p) => p.kind !== "intern");
+    const longs = list.filter((p) => p.side === "long"), shorts = list.filter((p) => p.side === "short");
+    const total = list.reduce((x, p) => x + p.upnl, 0);
+    const inMarket = list.reduce((x, p) => x + p.notional, 0);
+    const team = s.agents.filter((a) => a.status !== "fired").length;
+    return `<div class="card"><div class="cardhead"><h3>Открытые позиции · ${list.length}</h3>
+        <label class="toggle"><input type="checkbox" id="toggle-pos-interns" ${showInternPos ? "checked" : ""}> показывать стажёров</label></div>
+      <div class="note num">${list.length ? `лонгов ${longs.length} · шортов ${shorts.length} · в рынке ${fmt(inMarket, 0)} $ · на бумаге сейчас <b class="${cls(total)}">${sign(total)} $</b>${!showInternPos ? ` · вне рынка ${Math.max(0, team - list.length)} трейдеров` : ""}` : "сейчас все вне рынка: ждут сигнала"}</div>
+      ${list.length ? `<ul class="plist">${list.map(positionLine).join("")}</ul>` : ""}</div>`;
+  }
+
   function allocHTML(s) {
     const team = s.agents.filter((a) => a.status !== "fired");
     const btcv = team.reduce((x, a) => x + a.equity * Math.max(0, a.exposure), 0);
@@ -134,7 +157,7 @@
   }
 
   function homeHTML(s) {
-    return heroHTML(s) + approvalsHTML(s) + desksSummaryHTML(s) + tradesHTML(s) + `
+    return heroHTML(s) + approvalsHTML(s) + desksSummaryHTML(s) + positionsHTML(s) + tradesHTML(s) + `
       <div class="card chart"><h3>Результат компании, $</h3>
         <div class="range"><button data-r="day" class="${range === "day" ? "active" : ""}">День</button><button data-r="week" class="${range === "week" ? "active" : ""}">Неделя</button><button data-r="all" class="${range === "all" ? "active" : ""}">Всё время</button></div>
         <canvas id="chart"></canvas><div class="tip" id="tip"></div><div class="note" id="chart-note"></div></div>
@@ -474,7 +497,11 @@
     $$(".kb-status", view).forEach((b) => b.addEventListener("click", async (e) => { e.stopPropagation(); await api(`/api/knowledge/${b.dataset.id}/${b.dataset.st}`, { method: "POST" }); refresh(true); }));
     const lb = $("#btn-library", view);
     if (lb) lb.onclick = () => { showLibrary = !showLibrary; render(); };
-    if (tab === "home") { drawChart(); const tg = $("#toggle-interns", view); if (tg) tg.onchange = () => { showInternTrades = tg.checked; render(); }; }
+    if (tab === "home") {
+      drawChart();
+      const tg = $("#toggle-interns", view); if (tg) tg.onchange = () => { showInternTrades = tg.checked; render(); };
+      const tp = $("#toggle-pos-interns", view); if (tp) tp.onchange = () => { showInternPos = tp.checked; render(); };
+    }
   }
 
   async function refresh(force) {

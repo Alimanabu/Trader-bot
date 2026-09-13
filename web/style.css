@@ -261,3 +261,16 @@ button.btn.mini { padding: 2px 8px; font-size: 11px; border-radius: 6px; margin-
 .rbar > i { display: block; height: 100%; background: var(--btc); }
 .rbar > i.good { background: var(--up); } .rbar > i.bad { background: var(--down); }
 .rating b { font-size: 16px; text-align: right; }
+
+/* открытые позиции */
+.plist { list-style: none; margin: 8px 0 0; padding: 0; }
+.pos { padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.pos:last-child { border-bottom: 0; }
+.phead { display: flex; align-items: center; gap: 10px; }
+.pname { flex: 1; min-width: 0; }
+.pname b { font-size: 14px; }
+.pname .dim { font-size: 11px; }
+.pres { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.15; }
+.pres b { font-size: 14px; } .pres small { font-size: 11px; }
+.pbody { margin-top: 4px; font-size: 12px; color: var(--muted); padding-left: 40px; }
+.pbody b { color: var(--text); font-weight: 600; }

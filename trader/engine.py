@@ -572,6 +572,7 @@ class Engine:
             "events": self.j.recent_events(40),
             "decisions": self.j.recent_decisions(None, 60),
             "trades_24h": self._trades_24h(now_i),
+            "positions": self.open_positions(now_i),
             "last_poll_ts": self.last_poll_ts,
             "max_exposure": self.s.agent_max_exposure,
             "risk_per_trade": self.s.risk_per_trade,
@@ -633,6 +634,37 @@ class Engine:
             "staff": self.analytics.staff(),
             "memory_min_days": self.s.memory_min_days,
         }
+
+    def open_positions(self, now_i: int) -> list[dict]:
+        """Монитор открытых позиций: кто в рынке, с какого уровня, сколько заработал на бумаге, где стоп."""
+        price = self.last_price
+        out = []
+        for a in self.agents:
+            if a.status in {"fired", "dropped"} or not price or abs(a.account.btc) * price < 1.0:
+                continue
+            qty = a.account.btc
+            entry = a.account._avg_entry or price
+            upnl = (price - entry) * qty
+            notional = abs(qty) * price
+            opened_ts = 0
+            for t in reversed(a.account.trades):
+                if abs(t.pos_after) < 1e-12:
+                    break
+                opened_ts = t.ts
+            stop = a.stop_price
+            out.append({
+                "agent": a.name, "desk": a.desk, "kind": "intern" if is_intern(a) else "team", "rank": a.rank,
+                "side": "long" if qty > 0 else "short", "qty": round(abs(qty), 6), "notional": round(notional, 2),
+                "entry": round(entry, 2), "price": round(price, 2), "upnl": round(upnl, 2),
+                "upnl_pct": round(upnl / (entry * abs(qty)) * 100, 2) if entry and qty else 0.0,
+                "exposure": round(a.account.exposure(price), 3), "opened_ts": opened_ts,
+                "hours": round((now_i - opened_ts) / 3600, 1) if opened_ts else None,
+                "stop": round(stop, 2) if stop else None,
+                "stop_pct": round((stop - price) / price * 100, 2) if stop else None,
+                "reason": a.last_signal.reason if a.last_signal else "",
+            })
+        out.sort(key=lambda x: x["upnl"], reverse=True)
+        return out
 
     def _trades_24h(self, now_i: int) -> list[dict]:
         kinds = {a.name: ("intern" if a.status in {"intern", "dropped"} else "team") for a in self.agents}

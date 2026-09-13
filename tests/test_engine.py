@@ -553,3 +553,26 @@ def test_director_rating_bonus_and_replacement(settings):
     assert eng.head.alloc() is eng.head.ALLOC_STYLES["aggressive"]
     st = eng.state()
     assert st["head"]["director"]["number"] == 2 and st["directors_history"]
+
+
+def test_open_positions_monitor(settings):
+    settings.intern_count = 0
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    for a in eng.agents:
+        a.account.flatten(eng.last_price, T, "тест")
+    bull = next(a for a in eng.agents if a.desk == "bulls")
+    bear = next(a for a in eng.agents if a.desk == "bears")
+    t1 = bull.account.rebalance(1.0, 100.0, T - 7200, "тест лонг")
+    t2 = bear.account.rebalance(-1.0, 100.0, T - 3600, "тест шорт")
+    eng._after_trade(bull, t1, 100.0, 0.01); eng._after_trade(bear, t2, 100.0, 0.01)
+    eng.last_price = 110.0
+    pos = eng.open_positions(T)
+    assert {p["agent"] for p in pos} == {bull.name, bear.name}
+    pl = next(p for p in pos if p["agent"] == bull.name); ps = next(p for p in pos if p["agent"] == bear.name)
+    assert pl["side"] == "long" and pl["upnl"] > 0 and abs(pl["hours"] - 2.0) < 0.01 and pl["stop"] and pl["stop"] < 110
+    assert ps["side"] == "short" and ps["upnl"] < 0 and ps["stop"] > 100 and ps["stop_pct"] is not None
+    assert pos[0]["agent"] == bull.name       # сортировка по результату
+    assert "positions" in eng.state()

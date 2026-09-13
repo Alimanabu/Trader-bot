@@ -132,6 +132,10 @@ def create_app(engine: Engine | None = None, start_scheduler: bool = True) -> Fa
         return {"analysts": engine.analytics.stats(), "views": engine.j.recent_views(None, 40),
                 "consensus": engine.analytics.consensus(int(__import__("time").time()))}
 
+    @app.get("/api/positions")
+    def positions():
+        return engine.open_positions(int(__import__("time").time()))
+
     @app.get("/api/knowledge")
     def knowledge():
         return engine.knowledge_state()
