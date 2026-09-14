@@ -83,7 +83,7 @@
   const btc = (q) => Number(q).toLocaleString("ru-RU", { minimumFractionDigits: 5, maximumFractionDigits: 5 }) + " BTC";
   function tradeLine(t) {
     const who = `<b>${esc(t.agent)}</b>${t.kind === "intern" ? ' <span class="dim">(стажёр)</span>' : ""}`;
-    const stop = /стоп-лосс/i.test(t.reason || "") ? ' <span class="tag sell">стоп-лосс</span>' : /ликвидац/i.test(t.reason || "") ? ' <span class="tag sell">ликвидация</span>' : "";
+    const stop = /подтянутый стоп/i.test(t.reason || "") ? ' <span class="tag buy">подтянутый стоп</span>' : /безубыток/i.test(t.reason || "") ? ' <span class="tag">стоп в безубыток</span>' : /фиксация/i.test(t.reason || "") ? ' <span class="tag buy">фиксация прибыли</span>' : /стоп-лосс/i.test(t.reason || "") ? ' <span class="tag sell">стоп-лосс</span>' : /ликвидац/i.test(t.reason || "") ? ' <span class="tag sell">ликвидация</span>' : "";
     const res = t.pnl == null ? "" : ` · итог <b class="num ${cls(t.pnl)}">${sign(t.pnl)} $${t.pnl_pct != null ? ` (${sign(t.pnl_pct, 2)}%)` : ""}</b>`;
     const after = t.pos_after || 0;
     let verb;
@@ -109,8 +109,9 @@
   const dur = (h) => (h == null ? "—" : h < 1 ? `${Math.round(h * 60)} мин` : h < 48 ? `${fmt(h, 1)} ч` : `${fmt(h / 24, 1)} дн.`);
   function positionLine(p) {
     const sideTag = p.side === "long" ? '<span class="pill desk-bulls">лонг</span>' : '<span class="pill desk-bears">шорт</span>';
-    const stop = p.stop ? `стоп <span class="num">${fmt(p.stop, 0)} $</span> <span class="dim num">(${sign(p.stop_pct, 1)}%)</span>` : '<span class="dim">без стопа</span>';
-    return `<li class="pos"><div class="phead">${avatar({ name: p.agent, desk: p.desk }, 30)}<div class="pname"><b>${esc(p.agent)}</b>${p.kind === "intern" ? ' <span class="dim">(стажёр)</span>' : ""} ${sideTag}<div class="dim num">${fmt(p.exposure * 100, 0)}% капитала · ${btc(p.qty)} · ${fmt(p.notional, 0)} $</div></div>
+    const SK = { trailing: "подтянутый стоп", breakeven: "стоп в безубытке", initial: "стоп" };
+    const stop = p.stop ? `${SK[p.stop_kind] || "стоп"} <span class="num">${fmt(p.stop, 0)} $</span> <span class="dim num">(${sign(p.stop_pct, 1)}%)</span>${p.partial_taken ? ' · <span class="up">половина зафиксирована</span>' : ""}` : '<span class="dim">без стопа</span>';
+    return `<li class="pos ${p.stop_kind === "trailing" ? "protected" : ""}"><div class="phead">${avatar({ name: p.agent, desk: p.desk }, 30)}<div class="pname"><b>${esc(p.agent)}</b>${p.kind === "intern" ? ' <span class="dim">(стажёр)</span>' : ""} ${sideTag}<div class="dim num">${fmt(p.exposure * 100, 0)}% капитала · ${btc(p.qty)} · ${fmt(p.notional, 0)} $</div></div>
         <div class="pres num"><b class="${cls(p.upnl)}">${sign(p.upnl)} $</b><small class="${cls(p.upnl_pct)}">${sign(p.upnl_pct, 2)}%</small></div></div>
       <div class="pbody num">вход <b>${fmt(p.entry, 0)} $</b> · сейчас <b>${fmt(p.price, 0)} $</b> · ${stop} · в сделке ${dur(p.hours)}</div>
       ${p.reason ? `<div class="pbody dim">${esc(p.reason)}</div>` : ""}</li>`;
@@ -125,7 +126,8 @@
     return `<div class="card"><div class="cardhead"><h3>Открытые позиции · ${list.length}</h3>
         <label class="toggle"><input type="checkbox" id="toggle-pos-interns" ${showInternPos ? "checked" : ""}> показывать стажёров</label></div>
       <div class="note num">${list.length ? `лонгов ${longs.length} · шортов ${shorts.length} · в рынке ${fmt(inMarket, 0)} $ · на бумаге сейчас <b class="${cls(total)}">${sign(total)} $</b>${!showInternPos ? ` · вне рынка ${Math.max(0, team - list.length)} трейдеров` : ""}` : "сейчас все вне рынка: ждут сигнала"}</div>
-      ${list.length ? `<ul class="plist">${list.map(positionLine).join("")}</ul>` : ""}</div>`;
+      ${list.length ? `<ul class="plist">${list.map(positionLine).join("")}</ul>` : ""}
+      <div class="note" style="margin-top:8px">Сопровождение позиций: при прибыли в 1·ATR стоп переносится в безубыток, дальше подтягивается за лучшей ценой на 2·ATR и назад не отступает. При прибыли в 3·ATR фиксируется половина позиции, остаток идёт с подтянутым стопом.</div></div>`;
   }
 
   function allocHTML(s) {

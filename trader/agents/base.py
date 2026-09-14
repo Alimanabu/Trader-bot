@@ -75,6 +75,8 @@ class Agent:
     trial_weeks: int = 0         # недель на испытательном сроке (1 = только что переведён)
     live_ready: bool = False     # три недели подряд в плюсе: кандидат на реальный счёт
     rank: int = 1                # звание: 0 стажёр, 1 трейдер, 2 старший трейдер, 3 реальный счёт
+    best_price: float = 0.0      # лучшая цена с момента входа (для подтягивающегося стопа)
+    partial_taken: bool = False  # часть прибыли по этой позиции уже зафиксирована
 
     def start_balance(self) -> float:
         return self._start_balance
@@ -152,6 +154,8 @@ class Agent:
         self.hired_at = ts
         self.bars_in_position = 0
         self.stop_price = 0.0
+        self.best_price = 0.0
+        self.partial_taken = False
         self.week_start_equity = cash
 
     def snapshot(self, price: float | None = None) -> AgentSnapshot:

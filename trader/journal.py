@@ -103,7 +103,8 @@ class Journal:
                          ("alert_below", "REAL NOT NULL DEFAULT 0"), ("stop_price", "REAL NOT NULL DEFAULT 0"),
                          ("week_start_equity", "REAL NOT NULL DEFAULT 0"), ("week_key", "TEXT NOT NULL DEFAULT ''"),
                          ("streak_weeks", "INTEGER NOT NULL DEFAULT 0"), ("trial_weeks", "INTEGER NOT NULL DEFAULT 0"),
-                         ("live_ready", "INTEGER NOT NULL DEFAULT 0"), ("rank", "INTEGER NOT NULL DEFAULT 1")):
+                         ("live_ready", "INTEGER NOT NULL DEFAULT 0"), ("rank", "INTEGER NOT NULL DEFAULT 1"),
+                         ("best_price", "REAL NOT NULL DEFAULT 0"), ("partial_taken", "INTEGER NOT NULL DEFAULT 0")):
             if col not in cols:
                 self._conn.execute(f"ALTER TABLE agents ADD COLUMN {col} {ddl}")
         tcols = {r[1] for r in self._conn.execute("PRAGMA table_info(trades)").fetchall()}
@@ -469,8 +470,8 @@ class Journal:
         self._exec(
             "INSERT INTO agents(name,strategy,params,status,hired_at,cash,btc,peak_equity,day_start_equity,day_key,"
             "start_balance,realized_pnl,avg_entry,notes,last_decided_ts,slot_minute,next_check_ts,alert_above,alert_below,stop_price,"
-            "week_start_equity,week_key,streak_weeks,trial_weeks,live_ready,rank)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "week_start_equity,week_key,streak_weeks,trial_weeks,live_ready,rank,best_price,partial_taken)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(name) DO UPDATE SET strategy=excluded.strategy, params=excluded.params, status=excluded.status,"
             " hired_at=excluded.hired_at, cash=excluded.cash, btc=excluded.btc, peak_equity=excluded.peak_equity,"
             " day_start_equity=excluded.day_start_equity, day_key=excluded.day_key, start_balance=excluded.start_balance,"
@@ -478,12 +479,14 @@ class Journal:
             " last_decided_ts=excluded.last_decided_ts, slot_minute=excluded.slot_minute, next_check_ts=excluded.next_check_ts,"
             " alert_above=excluded.alert_above, alert_below=excluded.alert_below, stop_price=excluded.stop_price,"
             " week_start_equity=excluded.week_start_equity, week_key=excluded.week_key, streak_weeks=excluded.streak_weeks,"
-            " trial_weeks=excluded.trial_weeks, live_ready=excluded.live_ready, rank=excluded.rank",
+            " trial_weeks=excluded.trial_weeks, live_ready=excluded.live_ready, rank=excluded.rank,"
+            " best_price=excluded.best_price, partial_taken=excluded.partial_taken",
             (a.name, a.strategy.family, json.dumps(a.strategy.params), a.status, a.hired_at, a.account.cash,
              a.account.btc, a.peak_equity, a.day_start_equity, a.day_key, a.start_balance(),
              a.account.realized_pnl, a.account._avg_entry, json.dumps(a.notes, ensure_ascii=False),
              a.last_decided_ts, a.slot_minute, a.next_check_ts, a.alert_above, a.alert_below, a.stop_price,
-             a.week_start_equity, a.week_key, a.streak_weeks, a.trial_weeks, int(a.live_ready), int(a.rank)))
+             a.week_start_equity, a.week_key, a.streak_weeks, a.trial_weeks, int(a.live_ready), int(a.rank),
+             float(a.best_price), int(a.partial_taken)))
 
     def mark_fired(self, name: str, ts: int) -> None:
         self._exec("UPDATE agents SET status='fired', fired_at=? WHERE name=?", (ts, name))

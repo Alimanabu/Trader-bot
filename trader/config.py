@@ -50,6 +50,10 @@ class Settings:
     director_fail_weeks: int = 2           # недель подряд с рейтингом ниже 30 → предложение сменить директора
     director_bonus_pct: float = 10.0       # премия директора: % от недельной прибыли компании сверх равного распределения
     intraday_move_pct: float = 1.5         # цена ушла против режима на столько % → директор пересматривает распределение сразу
+    trailing_stop: bool = True             # подтягивать стоп за ценой (никогда не отступает назад)
+    trail_breakeven_atr: float = 1.0       # прибыль в N·ATR → стоп переносится в безубыток
+    partial_tp_atr: float = 3.0            # прибыль в N·ATR → фиксируется часть позиции (0 = выключено)
+    partial_tp_frac: float = 0.5           # какая часть позиции фиксируется
     intraday_cooldown_h: int = 3           # не чаще одного внутридневного пересмотра за столько часов
     db_path: str = "data/trader.db"
     port: int = 8080
@@ -114,6 +118,10 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         director_fail_weeks=int(env.get("DIRECTOR_FAIL_WEEKS", "2")),
         director_bonus_pct=float(env.get("DIRECTOR_BONUS_PCT", "10")),
         intraday_move_pct=float(env.get("INTRADAY_MOVE_PCT", "1.5")),
+        trailing_stop=_bool(env.get("TRAILING_STOP"), True),
+        trail_breakeven_atr=float(env.get("TRAIL_BREAKEVEN_ATR", "1.0")),
+        partial_tp_atr=float(env.get("PARTIAL_TP_ATR", "3.0")),
+        partial_tp_frac=float(env.get("PARTIAL_TP_FRAC", "0.5")),
         intraday_cooldown_h=int(env.get("INTRADAY_COOLDOWN_H", "3")),
         db_path=env.get("DB_PATH", "data/trader.db"),
         port=int(env.get("PORT", "8080")),

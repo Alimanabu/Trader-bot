@@ -603,3 +603,73 @@ def test_intraday_regime_recheck(settings):
     # через 3 часа: из боковика в рост
     res = eng.tick(now=T + 60 + settings.intraday_cooldown_h * 3600)
     assert res.get("intraday") and res["intraday"]["to"] == "up"
+
+
+def test_trailing_stop_breakeven_and_partial_take_profit(settings):
+    settings.intern_count = 0
+    settings.slippage_rate = 0.0
+    settings.stop_slippage = 0.0
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    for a in eng.agents:
+        a.account.flatten(eng.last_price, T, "тест")
+        a.next_check_ts = T + 10 * 86400          # стратегии молчат, работает только сопровождение
+    bull = next(a for a in eng.agents if a.desk == "bulls")
+    t = bull.account.rebalance(1.0, 100.0, T, "тест лонг")
+    eng._after_trade(bull, t, 100.0, 0.01)          # ATR 1% → стоп 2% → 98
+    eng._atr_pct = lambda candles: 0.01
+    assert abs(bull.stop_price - 98.0) < 0.15 and bull.best_price == 100.0   # цена входа включает комиссию
+    # +0.5%: стоп ещё не двигается
+    eng.market.price = lambda symbol: 100.5
+    eng.tick(now=T + 60)
+    assert abs(bull.stop_price - 98.49) < 0.15
+    # +1.2% (больше 1·ATR): стоп в безубыток с учётом комиссий
+    eng.market.price = lambda symbol: 101.2
+    eng.tick(now=T + 120)
+    assert bull.stop_price >= 100.2 and eng.stop_kind(bull) == "breakeven"
+    # +3.5% (больше 3·ATR): половина зафиксирована с прибылью, стоп подтянут к 103.5·0.98
+    qty_before = bull.account.btc
+    eng.market.price = lambda symbol: 103.5
+    eng.tick(now=T + 180)
+    assert bull.partial_taken and abs(bull.account.btc - qty_before / 2) < qty_before * 0.02
+    part = bull.account.trades[-1]
+    assert part.side == "SELL" and part.pnl is not None and part.pnl > 0 and "фиксация" in part.reason
+    assert abs(bull.stop_price - 103.5 * 0.98) < 0.01 and eng.stop_kind(bull) == "trailing"
+    # откат к 101: подтянутый стоп закрывает остаток в плюсе
+    eng.market.price = lambda symbol: 101.0
+    res = eng.tick(now=T + 240)
+    assert bull.name in res["stops"] and abs(bull.account.btc) < 1e-9
+    closing = bull.account.trades[-1]
+    assert closing.pnl is not None and closing.pnl > 0 and "подтянутый стоп" in closing.reason
+    assert bull.best_price == 0.0 and not bull.partial_taken
+    assert any("подтянутый стоп" in e["message"] for e in eng.j.recent_events(20))
+
+
+def test_trailing_stop_for_short(settings):
+    settings.intern_count = 0
+    settings.slippage_rate = 0.0
+    settings.stop_slippage = 0.0
+    settings.partial_tp_atr = 0            # только подтягивание
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    for a in eng.agents:
+        a.account.flatten(eng.last_price, T, "тест")
+        a.next_check_ts = T + 10 * 86400
+    bear = next(a for a in eng.agents if a.desk == "bears")
+    t = bear.account.rebalance(-1.0, 100.0, T, "тест шорт")
+    eng._after_trade(bear, t, 100.0, 0.01)
+    eng._atr_pct = lambda candles: 0.01
+    assert abs(bear.stop_price - 102.0) < 0.15
+    eng.market.price = lambda symbol: 96.0     # −4%: лучшая цена 96, стоп подтянут к 96·1.02
+    eng.tick(now=T + 60)
+    assert abs(bear.stop_price - 97.92) < 0.01 and eng.stop_kind(bear) == "trailing"
+    eng.market.price = lambda symbol: 97.0     # откат, но стоп не трогаем
+    eng.tick(now=T + 120)
+    assert abs(bear.stop_price - 97.92) < 0.01 and abs(bear.account.btc) > 0
+    eng.market.price = lambda symbol: 98.0     # стоп сработал, шорт закрыт в плюсе
+    res = eng.tick(now=T + 180)
+    assert bear.name in res["stops"] and bear.account.trades[-1].pnl > 0

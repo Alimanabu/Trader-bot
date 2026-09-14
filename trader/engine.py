@@ -98,7 +98,8 @@ class Engine:
                       stop_price=float(r.get("stop_price") or 0), week_start_equity=float(r.get("week_start_equity") or 0),
                       week_key=r.get("week_key") or "", streak_weeks=int(r.get("streak_weeks") or 0),
                       trial_weeks=int(r.get("trial_weeks") or 0), live_ready=bool(r.get("live_ready") or 0),
-                      rank=int(r.get("rank") if r.get("rank") is not None else (RANK_INTERN if r["status"] == "intern" else RANK_TRADER)))
+                      rank=int(r.get("rank") if r.get("rank") is not None else (RANK_INTERN if r["status"] == "intern" else RANK_TRADER)),
+                      best_price=float(r.get("best_price") or 0), partial_taken=bool(r.get("partial_taken") or 0))
             a._start_balance = r["start_balance"]
             a.last_price = self.last_price
             self.agents.append(a)
@@ -166,17 +167,82 @@ class Engine:
         return (a / tail[-1].close) if a and tail[-1].close else 0.01
 
     def _after_trade(self, a: Agent, trade, price: float, atr_pct: float) -> None:
-        """После сделки: выставить или снять стоп-лосс (для шорта стоп выше входа)."""
+        """После сделки: выставить или снять стоп-лосс (для шорта стоп выше входа).
+        Уже подтянутый стоп при доборе позиции назад не опускается."""
         pos = a.account.btc
         if abs(pos) < 1e-12:
             a.stop_price = 0.0
+            a.best_price = 0.0
+            a.partial_taken = False
         elif trade is not None:
             entry = a.account._avg_entry or price
             dist = self.risk.stop_distance(atr_pct)
+            opening = trade.pnl is None and (a.stop_price <= 0 or abs(trade.pos_after - (trade.qty if trade.side == "BUY" else -trade.qty)) < 1e-12)
             if pos > 0 and trade.side == "BUY":
-                a.stop_price = entry * (1 - dist)
+                new_stop = entry * (1 - dist)
+                a.stop_price = new_stop if opening else max(a.stop_price, new_stop)
+                if opening:
+                    a.best_price, a.partial_taken = price, False
             elif pos < 0 and trade.side == "SELL":
-                a.stop_price = entry * (1 + dist)
+                new_stop = entry * (1 + dist)
+                a.stop_price = new_stop if opening else min(a.stop_price, new_stop)
+                if opening:
+                    a.best_price, a.partial_taken = price, False
+
+    def _manage_position(self, a: Agent, price: float, now_i: int, atr_pct: float) -> str | None:
+        """Сопровождение открытой позиции: стоп в безубыток, подтягивающийся стоп, частичная фиксация.
+
+        Возвращает подпись сработавшего стопа («стоп-лосс», «стоп в безубыток», «подтянутый стоп») или None.
+        """
+        pos = a.account.btc
+        entry = a.account._avg_entry or price
+        if abs(pos) < 1e-12 or not entry or atr_pct <= 0:
+            return None
+        sign = 1 if pos > 0 else -1
+        a.best_price = max(a.best_price or price, price) if sign > 0 else min(a.best_price or price, price)
+        gain_atr = sign * (price / entry - 1) / atr_pct            # прибыль в единицах ATR
+        fee2 = 2 * self.s.fee_rate + 2 * self.s.slippage_rate      # издержки входа и выхода
+        # частичная фиксация прибыли
+        if self.s.partial_tp_atr > 0 and not a.partial_taken and gain_atr >= self.s.partial_tp_atr:
+            exp = a.account.exposure(price)
+            t = a.account.rebalance(exp * (1 - self.s.partial_tp_frac), price, now_i,
+                                    f"фиксация {self.s.partial_tp_frac:.0%} позиции: прибыль {sign * (price / entry - 1) * 100:+.2f}% ({gain_atr:.1f}·ATR)")
+            a.partial_taken = True
+            if t:
+                self.j.trade(t)
+                self.j.decision(now_i, a.name, a.strategy.family, t.side, a.account.exposure(price), 1.0,
+                                f"фиксация части прибыли: {sign * (price / entry - 1) * 100:+.2f}% от входа, остаток идёт с подтянутым стопом",
+                                price, a.equity(price), True, None, trade=t, exposure_before=exp)
+                self.j.equity(now_i, a.name, a.equity(price), price)
+                self.j.event("stop", f"{a.name}: зафиксировал {self.s.partial_tp_frac:.0%} позиции с прибылью {sign * (price / entry - 1) * 100:+.2f}%", a.name, ts=now_i)
+                a.last_target = a.account.exposure(price)
+                if abs(a.account.btc) < 1e-12:
+                    a.stop_price, a.best_price, a.partial_taken = 0.0, 0.0, False
+                    return None
+        # подтягивающийся стоп: только в сторону прибыли
+        if self.s.trailing_stop and a.stop_price:
+            dist = self.risk.stop_distance(atr_pct)
+            trail = a.best_price * (1 - sign * dist)
+            candidate = trail
+            if gain_atr >= self.s.trail_breakeven_atr or a.partial_taken:
+                breakeven = entry * (1 + sign * fee2)
+                candidate = max(candidate, breakeven) if sign > 0 else min(candidate, breakeven)
+            a.stop_price = max(a.stop_price, candidate) if sign > 0 else min(a.stop_price, candidate)
+        return None
+
+    def stop_kind(self, a: Agent) -> str:
+        """Подпись стопа: обычный, безубыток или подтянутый (прибыль защищена)."""
+        pos = a.account.btc
+        entry = a.account._avg_entry
+        if not a.stop_price or not entry or abs(pos) < 1e-12:
+            return ""
+        sign = 1 if pos > 0 else -1
+        edge = sign * (a.stop_price / entry - 1)
+        if edge > 2 * self.s.fee_rate + 2 * self.s.slippage_rate + 1e-9:
+            return "trailing"
+        if edge >= -1e-9:
+            return "breakeven"
+        return "initial"
 
     def _apply_funding(self, alive: list[Agent], price: float, candle_ts: int) -> None:
         """Финансирование фьючерсов раз в 8 часов (00:00, 08:00, 16:00 UTC) по текущей ставке биржи."""
@@ -214,22 +280,28 @@ class Engine:
                 out.append(a.name)
         return out
 
-    def _check_stops(self, alive: list[Agent], price: float, now_i: int) -> list[str]:
-        """Каждую минуту: если цена ушла ниже стопа, закрыть позицию и дать агенту паузу перед новым входом."""
+    def _check_stops(self, alive: list[Agent], price: float, now_i: int, atr_pct: float = 0.01) -> list[str]:
+        """Каждую минуту: сопроводить позицию (безубыток, подтягивание, частичная фиксация) и,
+        если цена дошла до стопа, закрыть позицию и дать агенту паузу перед новым входом."""
         hit = []
+        KIND = {"trailing": "подтянутый стоп", "breakeven": "стоп в безубыток", "initial": "стоп-лосс", "": "стоп-лосс"}
         for a in alive:
+            self._manage_position(a, price, now_i, atr_pct)
             pos = a.account.btc
             triggered = a.stop_price and ((pos > 0 and price <= a.stop_price) or (pos < 0 and price >= a.stop_price))
             if triggered:
+                label = KIND[self.stop_kind(a)]
                 fill_px = price * (1 - self.s.stop_slippage) if pos > 0 else price * (1 + self.s.stop_slippage)
-                t = a.account.flatten(fill_px, now_i, f"стоп-лосс {a.stop_price:.0f}")
+                t = a.account.flatten(fill_px, now_i, f"{label} {a.stop_price:.0f}")
                 if t:
                     self.j.trade(t)
-                    self.j.decision(now_i, a.name, a.strategy.family, t.side, 0.0, 1.0, f"стоп-лосс: цена {price:.0f} {'ниже' if pos > 0 else 'выше'} {a.stop_price:.0f}",
+                    self.j.decision(now_i, a.name, a.strategy.family, t.side, 0.0, 1.0, f"{label}: цена {price:.0f} {'ниже' if pos > 0 else 'выше'} {a.stop_price:.0f}",
                                     price, a.equity(price), True, None, trade=t, exposure_before=a.account.exposure(price))
                     self.j.equity(now_i, a.name, a.equity(price), price)
-                    self.j.event("stop", f"{a.name}: сработал стоп-лосс на {a.stop_price:.0f}", a.name, ts=now_i)
+                    self.j.event("stop", f"{a.name}: сработал {label} на {a.stop_price:.0f}" + (f", итог {t.pnl:+.2f} $" if t.pnl is not None else ""), a.name, ts=now_i)
                     hit.append(a.name)
+                a.best_price = 0.0
+                a.partial_taken = False
                 a.stop_price = 0.0
                 a.last_target = 0.0
                 a.next_check_ts = max(a.next_check_ts, now_i + self.risk.stop_cooldown_min * 60)
@@ -349,7 +421,7 @@ class Engine:
         for a in alive:
             a.account.min_rebalance_frac = float(pol.get("min_rebalance", 0.05))
         atr_pct = self._atr_pct(candles)
-        summary["stops"] = self._check_stops(alive, price, now_i)
+        summary["stops"] = self._check_stops(alive, price, now_i, atr_pct)
         summary["liquidations"] = self._check_liquidations(alive, price, now_i)
         view = None
         for a in alive:
@@ -664,6 +736,8 @@ class Engine:
                 "hours": round((now_i - opened_ts) / 3600, 1) if opened_ts else None,
                 "stop": round(stop, 2) if stop else None,
                 "stop_pct": round((stop - price) / price * 100, 2) if stop else None,
+                "stop_kind": self.stop_kind(a), "partial_taken": a.partial_taken,
+                "best_price": round(a.best_price, 2) if a.best_price else None,
                 "reason": a.last_signal.reason if a.last_signal else "",
             })
         out.sort(key=lambda x: x["upnl"], reverse=True)

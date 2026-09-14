@@ -274,3 +274,4 @@ button.btn.mini { padding: 2px 8px; font-size: 11px; border-radius: 6px; margin-
 .pres b { font-size: 14px; } .pres small { font-size: 11px; }
 .pbody { margin-top: 4px; font-size: 12px; color: var(--muted); padding-left: 40px; }
 .pbody b { color: var(--text); font-weight: 600; }
+.pos.protected .pres b { text-shadow: 0 0 10px rgba(52,210,123,.35); }
