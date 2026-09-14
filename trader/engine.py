@@ -339,6 +339,9 @@ class Engine:
         if self.j.kv_get("head_day") != dk or new_views:
             self.j.kv_set("head_day", dk)
             self.director.daily_policy(candles, now_i, self.analytics.consensus(now_i))
+        intraday = self.director.intraday_check(price, now_i)
+        if intraday:
+            summary["intraday"] = intraday
         pol = self.director.policy()
         self.risk.desk_caps = {k: float(v) for k, v in (pol.get("caps") or {}).items()} or {"bulls": 1.0, "bears": 1.0, "both": 1.0}
         self.risk.set_rules(self.j.active_rules())

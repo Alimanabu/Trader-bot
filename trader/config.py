@@ -49,6 +49,8 @@ class Settings:
     llm_model_strong: str = ""             # сильная модель для редких важных вызовов (стратег, ревизор, отчёт директора); пусто = та же
     director_fail_weeks: int = 2           # недель подряд с рейтингом ниже 30 → предложение сменить директора
     director_bonus_pct: float = 10.0       # премия директора: % от недельной прибыли компании сверх равного распределения
+    intraday_move_pct: float = 1.5         # цена ушла против режима на столько % → директор пересматривает распределение сразу
+    intraday_cooldown_h: int = 3           # не чаще одного внутридневного пересмотра за столько часов
     db_path: str = "data/trader.db"
     port: int = 8080
     panel_password: str = ""
@@ -111,6 +113,8 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         llm_model_strong=env.get("LLM_MODEL_STRONG", ""),
         director_fail_weeks=int(env.get("DIRECTOR_FAIL_WEEKS", "2")),
         director_bonus_pct=float(env.get("DIRECTOR_BONUS_PCT", "10")),
+        intraday_move_pct=float(env.get("INTRADAY_MOVE_PCT", "1.5")),
+        intraday_cooldown_h=int(env.get("INTRADAY_COOLDOWN_H", "3")),
         db_path=env.get("DB_PATH", "data/trader.db"),
         port=int(env.get("PORT", "8080")),
         panel_password=env.get("PANEL_PASSWORD", ""),

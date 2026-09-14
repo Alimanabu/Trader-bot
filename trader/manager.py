@@ -244,7 +244,8 @@ class Director:
                                  f"(подход: {'обычный' if pol['mode'] == 'balanced' else 'защитный'}){mem}", None,
                          {"regime": regime, "rule_regime": rule, "caps": caps, "mode": pol["mode"], "source": source, "memory": memory_adj}, ts=ts)
         pol.update({"regime": regime, "rule_regime": rule, "caps": caps, "changed_ts": ts, "source": source, "memory_adj": memory_adj,
-                    "analysts": {k: consensus[k] for k in ("regime", "strength", "votes")} if consensus else None})
+                    "analysts": {k: consensus[k] for k in ("regime", "strength", "votes")} if consensus else None,
+                    "regime_price": float(candles[-1].close) if candles else pol.get("regime_price"), "intraday": None})
         self.record_regime_day(regime, ts)
         if not pol.get("week_caps"):
             pol["week_caps"] = dict(caps)
@@ -330,6 +331,42 @@ class Director:
         lines.append(f"За неделю: стопов {ev.get('stop', 0)}, ликвидаций {ev.get('liquidation', 0)}, увольнений {ev.get('fire', 0)}, "
                      f"отчислений стажёров {ev.get('drop', 0)}, повышений {ev.get('hire', 0)}")
         return "\n".join(lines)
+
+    def intraday_check(self, price: float, ts: int) -> dict | None:
+        """Внутридневной пересмотр: цена ушла против режима больше чем на intraday_move_pct.
+
+        - Режим «рост», а цена упала, или «падение», а цена выросла → до утра нейтральное распределение (боковик).
+        - Режим «боковик», а цена уверенно пошла в сторону → распределение под это направление.
+        Не чаще раза в intraday_cooldown_h часов. Утром директор пересматривает всё заново.
+        """
+        if not self.s.head_policy:
+            return None
+        pol = self.policy()
+        base = float(pol.get("regime_price") or 0)
+        regime = pol.get("regime", "flat")
+        if not base or not price or regime not in {"up", "flat", "down"}:
+            return None
+        last = int((pol.get("intraday") or {}).get("ts") or 0)
+        if ts - last < self.s.intraday_cooldown_h * 3600:
+            return None
+        move = (price / base - 1) * 100
+        thr = self.s.intraday_move_pct
+        new = None
+        if regime == "up" and move <= -thr or regime == "down" and move >= thr:
+            new = "flat"
+        elif regime == "flat" and abs(move) >= thr:
+            new = "up" if move > 0 else "down"
+        if not new:
+            return None
+        caps = dict(self.alloc()[pol["mode"]][new])
+        self.memory_adjust(caps, new)
+        desc = ", ".join(f"{DESKS[k]['label'].lower()} {caps[k]:.0%}" for k in DESK_KEYS)
+        info = {"ts": ts, "from": regime, "to": new, "move": round(move, 2), "price": price}
+        pol.update({"regime": new, "caps": caps, "source": "внутридневной пересмотр", "regime_price": price, "intraday": info, "changed_ts": ts})
+        self._save_policy(pol)
+        self.j.event("head", f"Директор, внутридневной пересмотр: цена ушла от {base:.0f} до {price:.0f} ({move:+.1f}%) против режима "
+                             f"«{REGIME_RU[regime]}». До утра режим «{REGIME_RU[new]}», капитал по дескам: {desc}", None, info, ts=ts)
+        return info
 
     def desk_members(self, agents: list[Agent], desk: str, interns: bool = False) -> list[Agent]:
         return [a for a in agents if a.desk == desk and (is_intern(a) if interns else is_team(a))]

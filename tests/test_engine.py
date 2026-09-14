@@ -576,3 +576,30 @@ def test_open_positions_monitor(settings):
     assert ps["side"] == "short" and ps["upnl"] < 0 and ps["stop"] > 100 and ps["stop_pct"] is not None
     assert pos[0]["agent"] == bull.name       # сортировка по результату
     assert "positions" in eng.state()
+
+
+def test_intraday_regime_recheck(settings):
+    settings.intern_count = 0
+    settings.intraday_move_pct = 1.5
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    pol = eng.head.policy()
+    base = pol["regime_price"]
+    assert base > 0
+    # директор считает, что рынок падает, а цена растёт на 2% → до утра нейтральное распределение
+    pol.update({"regime": "down", "caps": dict(eng.head.ALLOC["balanced"]["down"])})
+    eng.head._save_policy(pol)
+    eng.market.price = lambda symbol: base * 1.02
+    res = eng.tick(now=T + 60)
+    assert res.get("intraday") and res["intraday"]["to"] == "flat"
+    pol = eng.head.policy()
+    assert pol["regime"] == "flat" and pol["caps"] == eng.head.ALLOC["balanced"]["flat"] and eng.risk.desk_caps["bulls"] == 0.6
+    assert any(e["kind"] == "head" and "внутридневной" in e["message"] for e in eng.j.recent_events(20))
+    # ещё +2% сразу: пауза между пересмотрами не прошла, ничего не меняется
+    eng.market.price = lambda symbol: base * 1.04
+    assert not eng.tick(now=T + 120).get("intraday")
+    # через 3 часа: из боковика в рост
+    res = eng.tick(now=T + 60 + settings.intraday_cooldown_h * 3600)
+    assert res.get("intraday") and res["intraday"]["to"] == "up"
