@@ -673,3 +673,24 @@ def test_trailing_stop_for_short(settings):
     eng.market.price = lambda symbol: 98.0     # стоп сработал, шорт закрыт в плюсе
     res = eng.tick(now=T + 180)
     assert bear.name in res["stops"] and bear.account.trades[-1].pnl > 0
+
+
+def test_position_without_stop_gets_one_and_closes_if_breached(settings):
+    settings.intern_count = 0
+    settings.slippage_rate = 0.0
+    settings.stop_slippage = 0.0
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    for a in eng.agents:
+        a.account.flatten(eng.last_price, T, "тест")
+        a.next_check_ts = T + 10 * 86400
+    bear = next(a for a in eng.agents if a.desk == "bears")
+    bear.account.rebalance(-1.0, 100.0, T, "шорт без стопа")
+    bear.stop_price = 0.0                       # как на сервере: позиция есть, стопа нет
+    eng._atr_pct = lambda candles: 0.01
+    eng.market.price = lambda symbol: 103.0     # цена уже выше стопа от входа (102)
+    res = eng.tick(now=T + 60)
+    assert bear.name in res["stops"] and abs(bear.account.btc) < 1e-9
+    assert any("не было стопа" in e["message"] for e in eng.j.recent_events(20))

@@ -286,6 +286,16 @@ class Engine:
         hit = []
         KIND = {"trailing": "подтянутый стоп", "breakeven": "стоп в безубыток", "initial": "стоп-лосс", "": "стоп-лосс"}
         for a in alive:
+            pos = a.account.btc
+            if abs(pos) * price >= 1.0 and not a.stop_price:
+                # страховка: позиция без стопа (после сбоя или перезапуска) получает стоп от цены входа
+                entry = a.account._avg_entry or price
+                dist = self.risk.stop_distance(atr_pct)
+                a.stop_price = entry * (1 - dist) if pos > 0 else entry * (1 + dist)
+                a.best_price = a.best_price or price
+                last = a.account.trades[-1].reason if a.account.trades else "—"
+                self.j.event("stop", f"{a.name}: у открытой позиции не было стопа, выставлен {a.stop_price:.0f} от входа {entry:.0f} "
+                                     f"(последняя сделка: {last[:60]})", a.name, ts=now_i)
             self._manage_position(a, price, now_i, atr_pct)
             pos = a.account.btc
             triggered = a.stop_price and ((pos > 0 and price <= a.stop_price) or (pos < 0 and price >= a.stop_price))
