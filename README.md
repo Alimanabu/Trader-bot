@@ -105,6 +105,7 @@ docker compose up -d
 python -m trader serve            # панель + планировщик (основной режим)
 python -m trader tick             # выполнить один шаг вручную
 python -m trader research         # запустить отдел исследований, показать кандидатов
+python -m trader review           # текстовый обзор работающей компании (капитал, дески, позиции, сделки)
 python -m trader simulate --hours 500   # прогнать отдел по синтетической истории (проверка логики без интернета)
 python -m pytest                  # тесты
 ```
