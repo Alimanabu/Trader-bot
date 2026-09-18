@@ -316,3 +316,22 @@ html.light .tabs { background: rgba(244,246,251,.94); }
 html.light .top { background: linear-gradient(var(--bg) 80%, transparent); }
 html.light .ava { color: #fff; }
 html.light .pill.rank-1 { background: #e6e9f2; }
+
+/* брифинг, стресс-тест, тепловые карты, сигналы, лаборатория, похожесть */
+.term .o1b { order: 1; } .term .o6 { order: 6; }
+.term .card.o1b, .term .card.o6 { margin-top: 12px; }
+.brief p { margin: 6px 0; font-size: 14px; line-height: 1.5; }
+.macro { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.heat { display: grid; gap: 4px; margin-top: 10px; }
+.heat.hours { grid-template-columns: repeat(12, 1fr); }
+.heat.days { grid-template-columns: repeat(7, 1fr); margin-top: 8px; }
+.heat div { background: var(--card2); border-radius: 6px; padding: 5px 2px; text-align: center; font-size: 11px; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.heat small { color: var(--muted); font-size: 10px; } .heat b { font-size: 11px; } .heat span { font-size: 9px; }
+@media (max-width: 480px) { .heat.hours { grid-template-columns: repeat(8, 1fr); } }
+.alertform, .labform { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.alertform select, .alertform input, .labform select { background: var(--card2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font-size: 13px; max-width: 100%; }
+.alertform input { width: 120px; }
+.labparams { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.labparams label { display: flex; flex-direction: column; font-size: 11px; color: var(--muted); gap: 2px; }
+.labparams input { width: 90px; background: var(--card2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font-size: 13px; }
+.corr table { font-size: 11px; } .corr th { font-weight: 500; white-space: nowrap; padding: 3px 4px; } .corr td { padding: 3px 4px; text-align: center; }

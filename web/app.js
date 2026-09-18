@@ -13,7 +13,7 @@
   const RANK = ["Стажёр", "Трейдер", "Старший трейдер", "Реальный счёт"];
   const DESK = { bulls: "Быки", bears: "Медведи", both: "Двусторонние" };
   const REG = { up: "рост", flat: "боковик", down: "падение", off: "выключено" };
-  const KIND = { owner: "владелец", knowledge: "база знаний", rule: "правило", reviser: "ревизор", strategist: "стратег", fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", stop: "стоп-лосс", demote: "в стажёры", weekly: "ротация", live_ready: "к реальным торгам", head: "директор", rank: "звание", analytics: "аналитика", funding: "финансирование", liquidation: "ликвидация", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
+  const KIND = { alert: "сигнал", briefing: "брифинг", capital: "капитал", live: "реальный счёт", owner: "владелец", knowledge: "база знаний", rule: "правило", reviser: "ревизор", strategist: "стратег", fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", stop: "стоп-лосс", demote: "в стажёры", weekly: "ротация", live_ready: "к реальным торгам", head: "директор", rank: "звание", analytics: "аналитика", funding: "финансирование", liquidation: "ликвидация", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
   function tradeCell(x) {
     if (x.trade_side) return `<span class="${x.trade_side === "BUY" ? "up" : "down"}">${x.trade_side === "BUY" ? "купил" : "продал"} ${fmt(x.trade_qty, 5)} BTC</span>`;
     if (!x.executed) return `<span class="warn">${esc(x.blocked_by || "заблокировано")}</span>`;
@@ -24,6 +24,7 @@
   const TABS = ["home", "desks", "interns", "company", "reports"];
   let state = null, tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "home", equityData = null, summary = null, families = null, range = "all";
   let candles = [], chartMode = "price", priceRange = 72, statsRange = "7d", deskSort = "pnl_total", deskOnlyPos = false, lastEventId = 0, notifyOn = false;
+  let heatRange = "7d", corrData = null, labResult = null, labFamily = "", labParams = {}, labDays = 30, labBusy = false;
   try { chartMode = localStorage.getItem("botz.chart") || "price"; notifyOn = localStorage.getItem("botz.notify") === "1"; } catch (_) {}
   const openRows = new Set();
   let showInternTrades = false, showInternPos = false, showLibrary = false;
@@ -55,7 +56,8 @@
     const ch = ago ? (s.price / ago - 1) * 100 : null;
     const team = s.agents.filter((a) => a.status !== "fired");
     const day = team.reduce((x, a) => x + a.pnl_day, 0);
-    $("#meta").innerHTML = `<b class="num">BTC ${fmt(s.price, 0)} $</b>${ch != null ? ` <span class="num ${cls(ch)}">${sign(ch, 2)}%<small> 24ч</small></span>` : ""} · <span class="pill reg-${h.regime}">${REG[h.regime] || "—"}</span> · <span class="num ${cls(day)}">${sign(day)} $ сегодня</span> · <span class="dim">${s.market} ${s.last_poll_ts ? hhmm(s.last_poll_ts) : "—"}</span>` + (s.error ? ` · <span class="down">${esc(s.error)}</span>` : "") + (d.halted ? ' · <b class="down">КОМПАНИЯ ОСТАНОВЛЕНА</b>' : "");
+    const risk = s.stress ? s.stress.at_risk_pct : null;
+    $("#meta").innerHTML = `<b class="num">BTC ${fmt(s.price, 0)} $</b>${ch != null ? ` <span class="num ${cls(ch)}">${sign(ch, 2)}%<small> 24ч</small></span>` : ""} · <span class="pill reg-${h.regime}">${REG[h.regime] || "—"}</span> · <span class="num ${cls(day)}">${sign(day)} $ сегодня</span>${risk != null ? ` · <span class="num ${risk > 3 ? "down" : risk > 1.5 ? "warn" : "muted"}" title="Убыток до стопов при падении на 5%">под риском ${fmt(risk, 1)}%</span>` : ""} · <span class="dim">${s.market} ${s.last_poll_ts ? hhmm(s.last_poll_ts) : "—"}</span>` + (s.error ? ` · <span class="down">${esc(s.error)}</span>` : "") + (d.halted ? ' · <b class="down">КОМПАНИЯ ОСТАНОВЛЕНА</b>' : "");
     $("#dot").className = "dot " + (s.error ? "err" : "ok");
     document.title = `${sign(day)} $ · BTC ${fmt(s.price, 0)} · Botz`;
   }
@@ -177,11 +179,34 @@
       <canvas id="chart"></canvas><div class="tip" id="tip"></div><div class="note" id="chart-note"></div>
       ${price ? '<div class="legend"><i class="lg-long"></i>вход лонг <i class="lg-short"></i>вход шорт <i class="lg-stop"></i>стоп <span class="lg-buy">▲</span> покупка <span class="lg-sell">▼</span> продажа</div>' : ""}</div>`;
   }
+  function briefingHTML(s) {
+    const b = s.briefing;
+    return `<div class="card o1b"><div class="cardhead"><h3>Утренний брифинг${b ? ` · ${esc(b.topic)}` : ""}</h3><button class="btn mini" id="btn-briefing">обновить</button></div>
+      ${b ? `<div class="brief">${esc(b.text).split(/\n+/).map((p) => `<p>${p}</p>`).join("")}</div>` : '<div class="note">Директор пишет брифинг каждое утро в 06:00 по Астане: что было ночью, что делает компания, на что смотреть сегодня. Нажмите «обновить», чтобы получить его сейчас.</div>'}</div>`;
+  }
+  function stressHTML(s) {
+    const st = s.stress || { moves: {}, equity: 0 };
+    const mv = st.moves || {};
+    const keys = Object.keys(mv);
+    const risk = st.at_risk_pct || 0;
+    return `<div class="card o6"><h3>Стресс-тест · под риском <span class="num ${risk > 3 ? "down" : risk > 1.5 ? "warn" : "up"}">${fmt(risk, 2)}%</span></h3>
+      <div class="note">Убыток компании, если цена прямо сейчас сдвинется. Стопы учтены: позиция закрывается на стопе, дальше не теряет.${st.unprotected ? ` <b class="down">Без стопа: ${st.unprotected}.</b>` : ""} В рынке ${fmt(st.exposure_pct || 0, 0)}% капитала.</div>
+      ${keys.length ? `<div class="tbl" style="margin-top:8px"><table><tr><th>Движение</th><th class="r">Компания</th><th class="r">Быки</th><th class="r">Медведи</th><th class="r">Двуст.</th></tr>
+        ${keys.map((k) => `<tr><td class="num"><b>${k}%</b></td><td class="r num ${cls(mv[k].pnl)}">${sign(mv[k].pnl)} $ <span class="dim">(${sign(mv[k].pct, 2)}%)</span></td>${["bulls", "bears", "both"].map((d) => `<td class="r num ${cls(mv[k].desks[d])}">${sign(mv[k].desks[d])}</td>`).join("")}</tr>`).join("")}</table></div>` : ""}</div>`;
+  }
   function directorMiniHTML(s) {
     const h = s.head || {}, d = h.director || {}, caps = h.caps || {};
     return `<div class="card o7 link" data-go="company"><h3>Директор · ${esc(d.name || "")}</h3>
       <div class="caps">${Object.keys(DESK).map((k) => `<div><span>${DESK[k]}</span><div class="capbar d-${k}"><i style="width:${Math.round((caps[k] ?? 1) * 100)}%"></i></div><b class="num">${fmt((caps[k] ?? 1) * 100, 0)}%</b></div>`).join("")}</div>
-      <div class="note num" style="margin-top:6px">режим ${REG[h.regime] || "—"} (${esc(h.source || "правила")}) · рейтинг ${d.rating ?? 50} · премия ${sign(d.bonus || 0)} $${h.intraday ? ` · внутридневной пересмотр ${hhmm(h.intraday.ts)}` : ""}</div></div>`;
+      <div class="note num" style="margin-top:6px">режим ${REG[h.regime] || "—"} (${esc(h.source || "правила")}) · рейтинг ${d.rating ?? 50} · премия ${sign(d.bonus || 0)} $${h.intraday ? ` · внутридневной пересмотр ${hhmm(h.intraday.ts)}` : ""}</div>
+      ${macroHTML(s)}</div>`;
+  }
+  function macroHTML(s) {
+    const m = s.macro; if (!m) return "";
+    const fng = m.fng != null ? `<span class="pill ${m.fng <= 25 ? "desk-bears" : m.fng >= 75 ? "desk-bulls" : ""}">страх и жадность ${m.fng} · ${esc(m.fng_label || "")}</span>` : "";
+    const oi = m.open_interest != null ? `<span class="pill">открытый интерес ${fmt(m.open_interest / 1000, 1)}k BTC${m.oi_change_pct != null ? ` (${sign(m.oi_change_pct, 1)}%)` : ""}</span>` : "";
+    const vol = m.volume_24h_usd != null ? `<span class="pill">объём ${fmt(m.volume_24h_usd / 1e9, 2)} млрд $</span>` : "";
+    return `<div class="macro">${fng}${oi}${vol}</div>`;
   }
   function statsHTML(s) {
     const st = (s.stats || {})[statsRange] || {};
@@ -203,6 +228,7 @@
   function homeHTML(s) {
     return `<div class="term"><div class="col-main">
         <div class="o1">${heroHTML(s)}</div>
+        ${briefingHTML(s)}
         ${chartCardHTML()}
         <div class="o3">${positionsHTML(s)}</div>
         <div class="o5">${tradesHTML(s)}</div>
@@ -211,6 +237,7 @@
         <div class="o0">${approvalsHTML(s)}</div>
         <div class="o2">${desksSummaryHTML(s)}</div>
         ${directorMiniHTML(s)}
+        ${stressHTML(s)}
         ${statsHTML(s)}
         <div class="card o10"><h3>Последние события</h3><ul class="events">${eventsHTML(s.events.slice(0, 10))}</ul></div>
       </div></div>`;
@@ -237,7 +264,7 @@
         <div class="kv">
           <div><span>Деск</span><b>${DESK[a.desk] || a.desk}</b></div>
           <div><span>Звание</span><b>${RANK[a.rank ?? 1]}</b></div>
-          <div><span>Капитал</span><b class="num">${fmt(a.equity)} $</b></div>
+          <div><span>Капитал</span><b class="num">${fmt(a.equity)} $${a.start_balance && Math.abs(a.start_balance - 1000) > 1 ? ` <span class="muted">(выделено ${fmt(a.start_balance, 0)})</span>` : ""}</b></div>
           <div><span>Сегодня</span><b class="num ${cls(a.pnl_day)}">${sign(a.pnl_day)} $</b></div>
           <div><span>Позиция</span><b class="num">${a.exposure < 0 ? "шорт " + fmt(-a.exposure * 100, 0) + "%" : fmt(a.exposure * 100, 0) + "% в BTC"}</b></div>
           <div><span>Просадка</span><b class="num">${fmt(a.drawdown * 100, 1)}%</b></div>
@@ -434,8 +461,80 @@
       ${k.lessons.length ? `<h3 style="margin-top:14px">Уроки аналитикам</h3><ul class="kb">${k.lessons.map((r) => `<li><span class="pill ${r.status === "verified" ? "green" : r.status === "retired" ? "" : "gold"}">${r.status === "verified" ? "подтверждён" : r.status === "retired" ? "в архиве" : "проверяется"}</span> <b>${esc(r.topic)}</b>: ${esc(r.text)}</li>`).join("")}</ul>` : ""}
     </div>`;
   }
+  function alertsHTML(s) {
+    const kinds = s.alert_kinds || {};
+    const list = s.alerts || [];
+    const team = s.agents.filter((a) => a.status !== "fired");
+    return `<div class="card"><h3>Мои сигналы</h3>
+      <div class="note">Условие проверяется каждую минуту. Сработавший сигнал попадает в события и в push-уведомление. Одноразовый выключается после срабатывания, повторяющийся напоминает не чаще раза в час.</div>
+      <div class="alertform">
+        <select id="al-kind">${Object.entries(kinds).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}</select>
+        <input id="al-value" type="number" step="any" placeholder="значение">
+        <select id="al-desk" hidden>${Object.entries(DESK).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select>
+        <select id="al-agent" hidden>${team.map((a) => `<option value="${esc(a.name)}">${esc(a.name)}</option>`).join("")}</select>
+        <label class="toggle"><input type="checkbox" id="al-repeat"> повторять</label>
+        <button class="btn" id="al-add">Добавить</button></div>
+      ${list.length ? `<ul class="kb">${list.map((a) => `<li><span class="pill ${a.active ? "green" : ""}">${a.active ? "ждёт" : "сработал"}</span> ${esc(kinds[a.kind] || a.kind)} ${a.value ? `<b class="num">${fmt(a.value, a.kind.startsWith("price") ? 0 : 2)}</b>` : ""} ${a.target ? `<b>${esc(DESK[a.target] || a.target)}</b>` : ""}${a.repeat ? ' <span class="dim">· повторяется</span>' : ""}${a.fired_n ? ` <span class="dim num">· срабатывал ${a.fired_n} раз, последний ${time(a.fired_ts)}</span>` : ""} <button class="btn mini al-del" data-id="${a.id}">убрать</button></li>`).join("")}</ul>` : '<div class="note" style="margin-top:8px">Сигналов пока нет.</div>'}</div>`;
+  }
+  function labHTML(s) {
+    const fam = families || [];
+    const cur = fam.find((f) => f.family === labFamily) || fam[0];
+    if (cur && !labFamily) { labFamily = cur.family; labParams = { ...cur.params }; }
+    const r = labResult;
+    return `<div class="card"><h3>Лаборатория · проверить идею</h3>
+      <div class="note">Выберите стратегию и параметры, прогон идёт по реальной истории часовых свечей (до 30 дней) с комиссией 0,1%. Это тот же бэктест, которым пользуется отдел исследований.</div>
+      <div class="labform">
+        <select id="lab-family">${fam.map((f) => `<option value="${f.family}" ${f.family === labFamily ? "selected" : ""}>${esc(f.label)}${f.side === "short" ? " · медведь" : f.side === "both" ? " · двусторонний" : ""}</option>`).join("")}</select>
+        <select id="lab-days">${[7, 14, 30].map((d) => `<option value="${d}" ${d === labDays ? "selected" : ""}>${d} дней</option>`).join("")}</select>
+        <button class="btn primary" id="lab-run" ${labBusy ? "disabled" : ""}>${labBusy ? "Считаю…" : "Прогнать"}</button></div>
+      <div class="labparams">${Object.entries(labParams).map(([k, v]) => `<label>${esc(k)}<input data-p="${esc(k)}" type="number" step="any" value="${v}"></label>`).join("")}</div>
+      ${cur ? `<div class="note">${esc(cur.description)}</div>` : ""}
+      ${r ? `<div class="stat" style="margin-top:10px">
+          <div><div class="k">Доход</div><div class="v num ${cls(r.result.return_pct)}">${sign(r.result.return_pct, 2)}%</div></div>
+          <div><div class="k">Просадка</div><div class="v num">${fmt(r.result.max_drawdown_pct, 2)}%</div></div>
+          <div><div class="k">Sharpe</div><div class="v num">${fmt(r.result.sharpe, 2)}</div></div>
+          <div><div class="k">Сделок</div><div class="v num">${r.result.trades}</div></div>
+          <div><div class="k">Оценка</div><div class="v num ${cls(r.result.score)}">${fmt(r.result.score, 1)}</div></div>
+        </div><div class="chart" style="margin-top:8px"><canvas id="lab-chart" style="height:160px"></canvas></div>` : ""}</div>`;
+  }
+  function drawLabChart() {
+    const canvas = $("#lab-chart"); if (!canvas || !labResult) return;
+    const pts = labResult.curve; if (pts.length < 2) return;
+    const dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr);
+    const ys = pts.map((p) => p.equity), min = Math.min(...ys), max = Math.max(...ys), pad = (max - min) * 0.1 || 1;
+    const x = (i) => 4 + (i / (pts.length - 1)) * (W - 8), y = (v) => 4 + (1 - (v - (min - pad)) / (max - min + 2 * pad)) * (H - 20);
+    const css = getComputedStyle(document.documentElement), col = (n) => css.getPropertyValue(n).trim();
+    ctx.strokeStyle = col("--line"); ctx.beginPath(); ctx.moveTo(4, y(1000)); ctx.lineTo(W - 4, y(1000)); ctx.stroke();
+    ctx.strokeStyle = ys[ys.length - 1] >= 1000 ? col("--up") : col("--down"); ctx.lineWidth = 2; ctx.beginPath();
+    pts.forEach((p, i) => (i ? ctx.lineTo(x(i), y(p.equity)) : ctx.moveTo(x(i), y(p.equity)))); ctx.stroke();
+    ctx.fillStyle = col("--muted"); ctx.font = "10px sans-serif"; ctx.fillText(time(pts[0].ts), 4, H - 4); ctx.textAlign = "right"; ctx.fillText(time(pts[pts.length - 1].ts), W - 4, H - 4);
+  }
+  function correlationHTML(s) {
+    const c = corrData;
+    if (!c) return `<div class="card"><h3>Похожесть трейдеров</h3><div class="note">Считаю по часовым приращениям капитала за 7 дней…</div></div>`;
+    if (c.names.length < 2) return `<div class="card"><h3>Похожесть трейдеров</h3><div class="note">Данных пока мало: нужно хотя бы сутки работы двух трейдеров.</div></div>`;
+    const short = (n) => n.replace(/\s*\(.*\)/, "").replace("Двусторонний", "Дв.").replace("Медведь", "Мед.").slice(0, 12);
+    const cell = (v) => { const a = Math.min(1, Math.abs(v)); const bg = v > 0 ? `rgba(52,210,123,${a * 0.85})` : `rgba(255,107,107,${a * 0.85})`; return `<td class="num" style="background:${bg};color:${a > 0.5 ? "#0b0d12" : "inherit"}">${v.toFixed(2)}</td>`; };
+    return `<div class="card"><h3>Похожесть трейдеров · корреляция за 7 дней</h3>
+      <div class="note">1,00 = двигаются одинаково (по сути один трейдер), 0 = независимы, отрицательное = в противофазе. Если весь деск красно-зелёный в одну сторону, разнообразия нет и просадка приходит ко всем сразу.</div>
+      <div class="tbl corr" style="margin-top:8px"><table><tr><th></th>${c.names.map((n) => `<th title="${esc(n)}">${esc(short(n))}</th>`).join("")}</tr>
+        ${c.names.map((n, i) => `<tr><th title="${esc(n)}"><span class="pill desk-${c.desks[i]}" style="padding:0 4px"></span> ${esc(short(n))}</th>${c.matrix[i].map(cell).join("")}</tr>`).join("")}</table></div>
+      ${c.pairs.length ? `<div class="note" style="margin-top:8px">Самые похожие пары: ${c.pairs.slice(0, 4).map((p) => `${esc(short(p.a))} и ${esc(short(p.b))} <b class="num">${p.r.toFixed(2)}</b>`).join("; ")}.</div>` : ""}</div>`;
+  }
+  function liveHTML(s) {
+    const l = s.live || {};
+    const orders = l.orders || [];
+    return `<div class="card"><h3>Реальный счёт · ${l.enabled ? (l.testnet ? "тестовая сеть Binance" : "<span class='down'>реальные деньги</span>") : "выключен"}</h3>
+      ${l.enabled ? `<div class="stat"><div><div class="k">Капитал на трейдера</div><div class="v num">${fmt(l.capital_usd, 0)} $</div></div>
+          <div><div class="k">Трейдеров со званием</div><div class="v num">${(l.agents || []).length}</div><div class="note">${(l.agents || []).map(esc).join(", ") || "пока никто"}</div></div>
+          <div><div class="k">Позиции на бирже</div><div class="v num" style="font-size:14px">${Object.entries(l.positions || {}).filter(([, q]) => q > 0).map(([n, q]) => `${esc(n)} ${fmt(q, 5)} BTC`).join("<br>") || "нет"}</div></div></div>
+        ${orders.length ? `<div class="tbl" style="margin-top:8px"><table><tr><th>Время</th><th>Трейдер</th><th>Сторона</th><th class="r">BTC</th><th class="r">$</th><th>Статус</th></tr>${orders.map((o) => `<tr><td class="num">${time(o.ts)}</td><td>${esc(o.agent)}</td><td class="${o.side === "BUY" ? "up" : "down"}">${o.side === "BUY" ? "покупка" : "продажа"}</td><td class="r num">${fmt(o.qty, 5)}</td><td class="r num">${fmt(o.quote)}</td><td>${o.error ? `<span class="down">${esc(o.error)}</span>` : esc(o.status)}</td></tr>`).join("")}</table></div>` : '<div class="note" style="margin-top:8px">Ордеров ещё не было. Они появятся, когда трейдер со званием «Реальный счёт» совершит сделку.</div>'}`
+        : `<div class="note">Мост к бирже: сделки трейдеров со званием «Реальный счёт» повторяются на Binance пропорционально выделенной сумме. Сначала тестовая сеть (виртуальные деньги, настоящие ордера), потом реальный счёт. Включается в <b>.env</b>: LIVE_ENABLED=true, LIVE_API_KEY и LIVE_API_SECRET от testnet.binance.vision, LIVE_CAPITAL_USD. Пока зеркалятся только покупки и продажи на споте (деск быков).</div>`}</div>`;
+  }
   function companyHTML(s) {
-    return `<h2 class="sec">Компания Botz · отделы</h2>` + approvalsHTML(s) + directorHTML(s) + knowledgeHTML(s) + analyticsHTML(s) + riskHTML(s) + scienceHTML(s) + experimentsHTML(s) + learningHTML(s);
+    return `<h2 class="sec">Компания Botz · отделы</h2>` + approvalsHTML(s) + directorHTML(s) + knowledgeHTML(s) + analyticsHTML(s) + riskHTML(s) + alertsHTML(s) + scienceHTML(s) + labHTML(s) + correlationHTML(s) + experimentsHTML(s) + liveHTML(s) + learningHTML(s);
   }
 
   // ---------- отчёты ----------
@@ -450,6 +549,7 @@
     const reports = sm.reports.map((e) => { let data = {}; try { data = JSON.parse(e.data || "{}"); } catch (_) {} return `<div class="report"><div class="t">${time(e.ts)}</div><div>${esc(e.message)}</div>${(data.recommendations || []).length ? `<ul>${data.recommendations.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}</div>`; }).join("");
     return `<h2 class="sec">Отчёты</h2>
       ${approvalsHTML(s)}
+      ${heatmapHTML(s)}
       <div class="card"><h3>Сегодня</h3><div class="stat">
         <div><div class="k">Результат дня</div><div class="v num ${cls(day)}">${sign(day)} $</div></div>
         <div><div class="k">Лучший сегодня</div><div class="v" style="font-size:14px">${bestDay ? `${esc(bestDay.name)} <span class="num ${cls(bestDay.pnl_day)}">${sign(bestDay.pnl_day)}</span>` : "—"}</div></div>
@@ -460,6 +560,36 @@
       <div class="card"><h3>За всё время по трейдерам</h3><div class="tbl"><table><tr><th>Трейдер</th><th class="r">Всего</th><th class="r">Сегодня</th><th class="r">Сделок</th><th class="r">Побед</th><th class="r">Просадка</th></tr>${allRows}</table></div></div>
       <div class="card"><h3>Все события</h3><ul class="events">${eventsHTML(s.events)}</ul></div>
       <div class="card"><h3>Экспорт</h3><div class="note">Все сделки компании в таблицу (CSV), открывается в Excel и Google Таблицах.</div><p><a class="btn" href="/api/trades.csv" download>Скачать сделки CSV</a></p></div>`;
+  }
+
+  function heatmapHTML(s) {
+    const hm = (s.heatmap || {})[heatRange]; if (!hm) return "";
+    const maxAbs = Math.max(1, ...hm.hours.map((c) => Math.abs(c.pnl)), ...hm.weekdays.map((c) => Math.abs(c.pnl)));
+    const cellStyle = (c) => { const a = Math.min(1, Math.abs(c.pnl) / maxAbs); return c.n ? `background:${c.pnl >= 0 ? `rgba(52,210,123,${0.15 + a * 0.7})` : `rgba(255,107,107,${0.15 + a * 0.7})`}` : ""; };
+    const hours = hm.hours.map((c, h) => ({ ...c, h: (h + 5) % 24 })).sort((a, b) => a.h - b.h);   // по Астане
+    const WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+    return `<div class="card"><div class="cardhead"><h3>Тепловые карты · когда компания зарабатывает</h3><div class="range"><button data-hr="7d" class="${heatRange === "7d" ? "active" : ""}">7 дней</button><button data-hr="all" class="${heatRange === "all" ? "active" : ""}">Всё время</button></div></div>
+      <div class="note">Итог закрытых сделок по часу закрытия (время Астаны) и по дню недели. Закрыто сделок: ${hm.closed}.</div>
+      <div class="heat hours">${hours.map((c) => `<div style="${cellStyle(c)}" title="${String(c.h).padStart(2, "0")}:00 · ${c.n} сделок · ${sign(c.pnl)} $"><small>${String(c.h).padStart(2, "0")}</small><b class="num">${c.n ? sign(c.pnl, 0) : "·"}</b></div>`).join("")}</div>
+      <div class="heat days">${hm.weekdays.map((c, i) => `<div style="${cellStyle(c)}" title="${WD[i]} · ${c.n} сделок"><small>${WD[i]}</small><b class="num">${c.n ? sign(c.pnl, 0) : "·"}</b><span class="dim">${c.n ? `${c.n} · ${Math.round((c.wins / c.n) * 100)}%` : ""}</span></div>`).join("")}</div></div>`;
+  }
+
+  // ---------- машина времени ----------
+  async function openTimeMachine(ts) {
+    const d = await api(`/api/at?ts=${ts}`);
+    let head = null; try { head = d.head ? JSON.parse(d.head.data || "{}") : null; } catch (_) {}
+    const caps = head && head.caps ? Object.entries(head.caps).map(([k, v]) => `${DESK[k]} ${fmt(v * 100, 0)}%`).join(" · ") : "";
+    $("#modal-box").innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div><b style="font-size:18px">Машина времени · ${time(ts)}</b><div class="note num">BTC ${fmt(d.price, 0)} $${d.candle ? ` · свеча О ${fmt(d.candle.open, 0)} В ${fmt(d.candle.high, 0)} Н ${fmt(d.candle.low, 0)} З ${fmt(d.candle.close, 0)}` : ""}</div></div><button class="btn" id="modal-close">Закрыть</button></div>
+      <div class="note" style="margin-top:8px"><b>Директор:</b> ${d.head ? `${esc(d.head.message)}${caps ? `<br>потолки: ${caps}` : ""} <span class="dim">(${time(d.head.ts)})</span>` : "записей ещё не было"}</div>
+      ${d.views.length ? `<div class="note"><b>Аналитики:</b> ${d.views.map((v) => `${esc(v.analyst)}: ${REG[v.regime]} (${fmt(v.confidence * 100, 0)}%)`).join("; ")}</div>` : ""}
+      <h3 style="margin:14px 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase">Открытые позиции в тот момент · ${d.positions.length}</h3>
+      ${d.positions.length ? `<div class="tbl"><table><tr><th>Трейдер</th><th>Сторона</th><th class="r">Вход</th><th class="r">На бумаге</th></tr>${d.positions.map((p) => `<tr><td>${esc(p.agent)} ${deskPill(p)}</td><td class="${p.side === "long" ? "up" : "down"}">${p.side === "long" ? "лонг" : "шорт"}</td><td class="r num">${fmt(p.entry, 0)}</td><td class="r num ${cls(p.upnl)}">${sign(p.upnl)} $</td></tr>`).join("")}</table></div>` : '<div class="note">все были вне рынка</div>'}
+      <h3 style="margin:14px 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase">Что думали трейдеры (последний час)</h3>
+      ${d.decisions.length ? `<ul class="feed">${d.decisions.map((x) => `<li><time>${hhmm(x.ts)}</time><b>${esc(x.agent)}</b><span class="tag ${x.action === "BUY" ? "buy" : x.action === "SELL" ? "sell" : ""}">${ACTION[x.action] || x.action}${x.trade_side ? (x.trade_side === "BUY" ? " · купил" : " · продал") : ""}</span><span class="muted">${esc(x.reason)}</span></li>`).join("")}</ul>` : '<div class="note">решений за этот час не записано</div>'}
+      ${d.events.length ? `<h3 style="margin:14px 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase">События часа</h3><ul class="events">${eventsHTML(d.events)}</ul>` : ""}`;
+    $("#modal").classList.add("open");
+    $("#modal-close").onclick = () => $("#modal").classList.remove("open");
   }
 
   // ---------- общие куски ----------
@@ -539,6 +669,13 @@
     };
     canvas.onmousemove = onMove; canvas.ontouchstart = onMove; canvas.ontouchmove = onMove;
     canvas.onmouseleave = () => (tip.style.display = "none");
+    canvas.onclick = (ev) => {
+      const b = canvas.getBoundingClientRect(); const px = ev.clientX - b.left;
+      const i = Math.max(0, Math.min(pts.length - 1, Math.floor(((px - L) / (W - L - R)) * pts.length)));
+      if (pts[i]) openTimeMachine(pts[i].ts + step - 1);
+    };
+    canvas.style.cursor = "pointer";
+    note.innerHTML += ' · <span class="dim">клик по свече открывает машину времени</span>';
   }
 
   // ---------- график капитала ----------
@@ -632,6 +769,35 @@
     $$(".range button[data-sr]", view).forEach((b) => b.addEventListener("click", () => { statsRange = b.dataset.sr; render(); }));
     $$(".act-close", view).forEach((b) => b.addEventListener("click", async (e) => { e.stopPropagation(); e.preventDefault(); if (confirm(`Закрыть позицию ${b.dataset.name} по рынку?`)) { await api(`/api/agents/${encodeURIComponent(b.dataset.name)}/close`, { method: "POST" }); refresh(true); } }));
     const ds = $("#desk-sort", view); if (ds) ds.onchange = () => { deskSort = ds.value; render(); };
+    $$(".range button[data-hr]", view).forEach((b) => b.addEventListener("click", () => { heatRange = b.dataset.hr; render(); }));
+    const bb = $("#btn-briefing", view); if (bb) bb.onclick = async () => { bb.disabled = true; bb.textContent = "пишу…"; try { await api("/api/briefing", { method: "POST" }); } finally { refresh(true); } };
+    // сигналы
+    const alKind = $("#al-kind", view);
+    if (alKind) {
+      const sync = () => { const k = alKind.value; $("#al-desk", view).hidden = !k.startsWith("desk_"); $("#al-agent", view).hidden = !k.startsWith("agent_"); $("#al-value", view).hidden = k === "agent_entry" || k === "agent_exit"; $("#al-value", view).placeholder = k.startsWith("price") ? "цена, $" : "процент"; };
+      alKind.onchange = sync; sync();
+      $("#al-add", view).onclick = async () => {
+        const k = alKind.value; const target = k.startsWith("desk_") ? $("#al-desk", view).value : k.startsWith("agent_") ? $("#al-agent", view).value : "";
+        await api("/api/alerts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: k, value: Number($("#al-value", view).value || 0), target, repeat: $("#al-repeat", view).checked }) });
+        refresh(true);
+      };
+      $$(".al-del", view).forEach((b) => b.addEventListener("click", async () => { await api(`/api/alerts/${b.dataset.id}`, { method: "DELETE" }); refresh(true); }));
+    }
+    // лаборатория
+    const lf = $("#lab-family", view);
+    if (lf) {
+      lf.onchange = () => { labFamily = lf.value; const f = (families || []).find((x) => x.family === labFamily); labParams = f ? { ...f.params } : {}; labResult = null; render(); };
+      $("#lab-days", view).onchange = (e) => { labDays = Number(e.target.value); };
+      $$(".labparams input", view).forEach((inp) => inp.addEventListener("change", () => { labParams[inp.dataset.p] = Number(inp.value); }));
+      $("#lab-run", view).onclick = async () => {
+        labBusy = true; render();
+        try { labResult = await api("/api/lab/backtest", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ family: labFamily, params: labParams, days: labDays }) }); }
+        catch (e) { alert("Не удалось прогнать: " + e.message); }
+        finally { labBusy = false; render(); }
+      };
+      drawLabChart();
+    }
+    if (tab === "company" && !corrData) api("/api/correlation").then((c) => { corrData = c; if (tab === "company") render(); }).catch(() => {});
     const dp = $("#desk-onlypos", view); if (dp) dp.onchange = () => { deskOnlyPos = dp.checked; render(); };
     const rb = $("#btn-research", view);
     if (rb) rb.onclick = async () => { rb.disabled = true; rb.textContent = "Считаю, около минуты…"; try { await api("/api/research", { method: "POST" }); } finally { rb.disabled = false; rb.textContent = "Запустить исследование"; refresh(true); } };
@@ -678,9 +844,26 @@
   const bell = $("#btn-notify");
   const paintBell = () => { bell.classList.toggle("on", notifyOn); bell.title = notifyOn ? "Уведомления включены" : "Включить уведомления"; };
   paintBell();
+  const urlB64ToU8 = (s) => { const b = atob((s + "=".repeat((4 - (s.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(b, (c) => c.charCodeAt(0)); };
+  async function pushSubscribe() {
+    const reg = await navigator.serviceWorker.ready;
+    const { key } = await api("/api/push/key");
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToU8(key) });
+    const label = /Android/i.test(navigator.userAgent) ? "Android" : /iPhone|iPad/i.test(navigator.userAgent) ? "iOS" : "компьютер";
+    await api("/api/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ subscription: sub.toJSON(), label }) });
+    await api("/api/push/test", { method: "POST" });
+  }
+  async function pushUnsubscribe() {
+    const reg = await navigator.serviceWorker.ready; const sub = await reg.pushManager.getSubscription();
+    if (sub) { await api("/api/push/unsubscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint: sub.endpoint }) }); await sub.unsubscribe(); }
+  }
   bell.onclick = async () => {
     if (!("Notification" in window)) { alert("Браузер не поддерживает уведомления"); return; }
-    if (!notifyOn) { const p = await Notification.requestPermission(); if (p !== "granted") { alert("Разрешите уведомления в настройках браузера"); return; } }
+    if (!window.isSecureContext) { alert("Уведомления работают только по https-адресу панели"); return; }
+    if (!notifyOn) {
+      const p = await Notification.requestPermission(); if (p !== "granted") { alert("Разрешите уведомления в настройках браузера"); return; }
+      try { if ("PushManager" in window) await pushSubscribe(); } catch (e) { alert("Push не подключился: " + e.message + ". Уведомления будут приходить, пока панель открыта."); }
+    } else { try { await pushUnsubscribe(); } catch (_) {} }
     notifyOn = !notifyOn; try { localStorage.setItem("botz.notify", notifyOn ? "1" : "0"); } catch (_) {} paintBell();
   };
   document.addEventListener("keydown", (e) => {

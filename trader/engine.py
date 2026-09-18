@@ -690,6 +690,7 @@ class Engine:
                 base = a.start_balance()
             d["pnl_24h"] = round(a.equity(price) - base, 2)
             d["days"] = round(max(0.0, (now_i - a.hired_at) / 86400), 1)
+            d["start_balance"] = round(a.start_balance(), 2)
             return d
 
         snaps = [enrich(a) for a in self.agents if a.status not in {"intern", "dropped", "experiment"}]

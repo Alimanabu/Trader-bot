@@ -159,7 +159,7 @@ def test_agents_check_market_at_their_own_cadence(settings):
     last = market.candles("BTCUSDT", "1h", 1)[-1]
     T = last.ts + 3600 + 5
     res = eng.tick(now=T)
-    assert {d["agent"] for d in res["decisions"]} == {a.name for a in eng.agents}
+    assert {d["agent"] for d in res["decisions"]} == {a.name for a in eng.agents if a.status == "active"}
     assert eng.tick(now=T + 30).get("skipped")
     res = eng.tick(now=T + 61)
     fast = {a.name for a in eng.agents if not a.strategy.uses_llm() and a.strategy.cadence_minutes() == 1}
