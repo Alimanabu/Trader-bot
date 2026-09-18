@@ -162,10 +162,10 @@ def test_agents_check_market_at_their_own_cadence(settings):
     assert {d["agent"] for d in res["decisions"]} == {a.name for a in eng.agents if a.status == "active"}
     assert eng.tick(now=T + 30).get("skipped")
     res = eng.tick(now=T + 61)
-    fast = {a.name for a in eng.agents if not a.strategy.uses_llm() and a.strategy.cadence_minutes() == 1}
+    fast = {a.name for a in eng.agents if a.status == "active" and a.strategy.cadence_minutes() == 1}
     assert fast and {d["agent"] for d in res["decisions"]} == fast
     res = eng.tick(now=T + 10 * 60 + 1)
-    expected = {a.name for a in eng.agents if not a.strategy.uses_llm() and a.strategy.cadence_minutes() <= 10}
+    expected = {a.name for a in eng.agents if a.status == "active" and a.strategy.cadence_minutes() <= 10}
     assert {d["agent"] for d in res["decisions"]} == expected
     assert not any(a.strategy.uses_llm() for a in eng.agents), "нейросеть больше не торгует"
 
