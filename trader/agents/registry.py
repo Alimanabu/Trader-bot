@@ -13,11 +13,12 @@ from ..llm import ClaudeClient
 from ..paper import PaperAccount
 from .base import Agent, Strategy
 from .llm import LLM_STRATEGIES
+from .community import COMMUNITY_STRATEGIES
 from .rules import RULE_STRATEGIES
 from .scalper import EXPERIMENT_STRATEGIES
 from .sided import SHORTABLE, Sided
 
-STRATEGY_FAMILIES: dict[str, type[Strategy]] = {s.family: s for s in RULE_STRATEGIES + LLM_STRATEGIES + EXPERIMENT_STRATEGIES}
+STRATEGY_FAMILIES: dict[str, type[Strategy]] = {s.family: s for s in RULE_STRATEGIES + COMMUNITY_STRATEGIES + LLM_STRATEGIES + EXPERIMENT_STRATEGIES}
 # экспериментальные агенты: вне десков, на своём счёте, для проверки идей на живых данных
 EXPERIMENTS = {"scalper": "Скальпер"}
 # семейства фьючерсного демо-режима: <база>_short и <база>_both
@@ -99,6 +100,14 @@ FAMILY_LABELS = {
     "llm_news": "Новостной аналитик",
     "llm_regime_both": "Нейро-двусторонний",
     "scalper": "Скальпер (1 мин)",
+    "bb_rsi": "Боллинджер+RSI",
+    "ichimoku": "Ишимоку",
+    "ema_ribbon": "EMA-лента",
+    "adx_dmi": "ADX/DMI",
+    "squeeze": "Сжатие полос",
+    "vwap_breakout": "Пробой VWAP",
+    "stoch_rsi": "Стох-RSI",
+    "cmf_trend": "Поток Чайкина",
 }
 
 

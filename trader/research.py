@@ -13,6 +13,7 @@ from dataclasses import dataclass, asdict
 
 from .agents.base import Strategy
 from .agents.registry import STRATEGY_FAMILIES, SIDED_FAMILIES, build_strategy, family_base
+from .agents.community import COMMUNITY_STRATEGIES
 from .agents.rules import RULE_STRATEGIES
 from .models import Candle
 from .paper import PaperAccount
@@ -166,7 +167,7 @@ class StrategyLab:
         return picked
 
     def families_count(self) -> list[str]:
-        return [s.family for s in RULE_STRATEGIES] + list(SIDED_FAMILIES)
+        return [s.family for s in RULE_STRATEGIES + COMMUNITY_STRATEGIES] + list(SIDED_FAMILIES)
 
     def best_params(self, family: str, candles: list[Candle]) -> BacktestResult:
         best: BacktestResult | None = None

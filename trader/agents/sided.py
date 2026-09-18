@@ -11,7 +11,8 @@ from ..models import Action, Candle, Signal
 from .base import Strategy
 
 SHORTABLE = ["sma_cross", "ema_momentum", "rsi_reversion", "bollinger", "breakout", "macd", "zscore",
-             "rsi_divergence", "supertrend", "keltner", "mtf"]
+             "rsi_divergence", "supertrend", "keltner", "mtf",
+             "bb_rsi", "ichimoku", "ema_ribbon", "adx_dmi", "squeeze", "vwap_breakout", "stoch_rsi", "cmf_trend"]
 
 
 class Sided(Strategy):
