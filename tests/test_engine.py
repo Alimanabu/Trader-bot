@@ -21,11 +21,12 @@ def hours(eng, market, n):
 
 def test_engine_creates_department(settings):
     eng, _ = make_engine(settings)
-    assert len(eng.agents) == settings.team_size == 18
-    assert all(a.status == "active" for a in eng.agents)
-    assert sum(1 for a in eng.agents if a.strategy.side == "short") == 6
-    assert sum(1 for a in eng.agents if a.strategy.side == "both") == 6
-    assert all(a.desk in {"bulls", "bears", "both"} and a.rank == 1 for a in eng.agents)
+    team = [a for a in eng.agents if a.status == "active"]
+    assert len(team) == settings.team_size == 18
+    assert len([a for a in eng.agents if a.status == "experiment"]) == 1
+    assert sum(1 for a in team if a.strategy.side == "short") == 6
+    assert sum(1 for a in team if a.strategy.side == "both") == 6
+    assert all(a.desk in {"bulls", "bears", "both"} and a.rank == 1 for a in team)
 
 
 def test_tick_records_decisions_and_skips_duplicate(settings):
@@ -761,3 +762,58 @@ def test_breakeven_exit_uses_long_cooldown(settings):
     bull.next_check_ts = 0
     res = eng.tick(now=T + 120)
     assert bull.name in res["stops"] and bull.next_check_ts >= T + 120 + 120 * 60
+
+
+def test_scalper_experiment_trades_on_minute_candles(settings):
+    from trader.models import Candle
+    settings.intern_count = 0
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    sc = next(a for a in eng.agents if a.status == "experiment")
+    assert sc.strategy.family == "scalper" and sc.strategy.timeframe == "1m" and sc.rank == 0
+    st = eng.state()
+    assert st["experiments"] and st["experiments"][0]["name"] == sc.name
+    assert all(a["name"] != sc.name for a in st["agents"])          # не в десках
+    # минутные свечи: ровный ряд, затем провал → скальпер покупает; возврат с прибылью → продаёт
+    base = 100.0
+    eng.m1 = [Candle(T - (90 - i) * 60, base, base, base, base, 0.0) for i in range(90)]
+    eng.m1[-1] = Candle(eng.m1[-1].ts, base, base, base, base * 1.001, 0.0)   # чуть разброса, чтобы sd > 0
+    eng.market.price = lambda symbol: base * 0.99
+    sc.next_check_ts = 0
+    eng.tick(now=T + 60)
+    assert sc.account.btc > 0, "скальпер должен купить провал"
+    entry = sc.account._avg_entry
+    for k in range(2, 6):                       # цена возвращается к среднему: +1% от входа
+        eng.market.price = lambda symbol, k=k: entry * (1 + 0.004 * k)
+        sc.next_check_ts = 0
+        eng.tick(now=T + k * 60)
+        if abs(sc.account.btc) < 1e-9:
+            break
+    assert abs(sc.account.btc) < 1e-9 and sc.account.trades[-1].pnl > 0
+    assert len([t for t in sc.account.trades if t.pnl is None]) >= 1
+    # скальпер не подчиняется лимиту входов: вторая покупка того же дня разрешена
+    eng.market.price = lambda symbol: entry * 0.985
+    sc.next_check_ts = 0
+    eng.tick(now=T + 10 * 60)
+    assert sc.account.btc > 0
+
+
+def test_owner_can_close_position_and_pause(settings):
+    settings.intern_count = 0
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    bull = next(a for a in eng.agents if a.desk == "bulls")
+    bull.account.flatten(eng.last_price, T, "тест")
+    bull.account.rebalance(1.0, eng.last_price, T, "тест")
+    assert eng.manual_close(bull.name) and abs(bull.account.btc) < 1e-9
+    assert bull.exit_side == "long" and bull.next_check_ts > T
+    assert any(e["kind"] == "owner" for e in eng.j.recent_events(10))
+    assert not eng.manual_close(bull.name)                      # позиции уже нет
+    assert eng.manual_pause(bull.name) and bull.status == "paused"
+    assert eng.manual_pause(bull.name, resume=True) and bull.status == "active"
+    st = eng.state()["stats"]
+    assert "7d" in st and "desks" in st["7d"] and "closed" in st["all"]

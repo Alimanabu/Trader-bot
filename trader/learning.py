@@ -118,8 +118,8 @@ class Learner:
         changed: list[str] = []
         hist = candles[-self.s.research_lookback:]
         for a in agents:
-            if a.strategy.uses_llm() or a.status == "fired":
-                continue
+            if a.strategy.uses_llm() or a.status == "fired" or getattr(a.strategy, "timeframe", "1h") != "1h":
+                continue                      # минутные стратегии на часовой истории не проверить
             current = self.lab.evaluate(a.strategy, hist)
             best = self.lab.best_params(a.strategy.family, hist)
             if best.params != a.strategy.params and best.score() > current.score() + 1.0:

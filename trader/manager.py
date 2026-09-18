@@ -438,7 +438,7 @@ class Director:
         targets = only if only is not None else [a for a in agents if a.status not in {"fired", "dropped"} and (all_agents or is_team(a))]
         n = 0
         for a in targets:
-            if a.strategy.uses_llm():
+            if a.strategy.uses_llm() or getattr(a.strategy, "timeframe", "1h") != "1h":
                 continue
             try:
                 best = self.lab.best_params(a.strategy.family, hist)

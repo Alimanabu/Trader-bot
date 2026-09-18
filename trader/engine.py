@@ -14,8 +14,8 @@ import time
 from datetime import datetime, timezone
 
 from .agents.base import Agent
-from .agents.registry import (DESKS, RANK_INTERN, RANK_TRADER, DEFAULT_NAMES, build_strategy, default_department, default_families,
-                              desk_of, family_label, family_side, new_account)
+from .agents.registry import (DESKS, EXPERIMENTS, RANK_INTERN, RANK_TRADER, DEFAULT_NAMES, build_strategy, default_department,
+                              default_families, desk_of, family_label, family_side, new_account)
 from .analytics import AnalyticsDept
 from .data import indicators as ind
 from .config import Settings
@@ -33,6 +33,10 @@ log = logging.getLogger(__name__)
 
 def day_key_of(ts: int) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def is_experiment(a: Agent) -> bool:
+    return a.status == "experiment"
 
 
 class Engine:
@@ -57,6 +61,9 @@ class Engine:
         self.last_price: float = float(self.j.kv_get("last_price", 0.0))
         self.last_poll_ts: int = 0
         self.last_error: str = ""
+        self.m1: list[Candle] = [Candle(*row) if len(row) == 6 else Candle(row[0], row[1], row[2], row[3], row[4], 0.0)
+                                 for row in (self.j.kv_get("m1", []) or [])]
+        self._m1_seed_try: int = 0
         self._load()
         n = self.j.repair_short_pnl()
         if n:
@@ -74,6 +81,7 @@ class Engine:
             for a in self.agents:
                 self.j.save_agent(a)
             self.j.event("start", f"Компания Botz создана: три деска, {len(self.agents)} трейдеров")
+            self._ensure_defaults()
             return
         for r in rows:
             if r["strategy"].startswith("llm_") or r["strategy"] in {"llm_regime_both"}:
@@ -122,12 +130,23 @@ class Engine:
             self.j.event("hire", f"В деск «{DESKS[desk]['label']}» добавлен новый штатный трейдер: {name}", name)
         if self.last_price:
             self.director.trim_desks(self.agents, self.last_price, int(time.time()))
+        if self.s.experiments:
+            for family, name in EXPERIMENTS.items():
+                if family in known:
+                    continue
+                strat = build_strategy(family, None, self.client)
+                a = Agent(name=name, strategy=strat, account=new_account(self.s, name, allow_short=strat.side != "long"), status="experiment", rank=RANK_INTERN)
+                a.last_price = self.last_price
+                self.agents.append(a)
+                self.j.save_agent(a)
+                self.j.event("hire", f"Запущен эксперимент: {name} ({strat.description}). Торгует на своём счёте вне десков", name)
 
     def save(self) -> None:
         for a in self.agents:
             self.j.save_agent(a)
         self.j.kv_set("last_tick_ts", self.last_tick_ts)
         self.j.kv_set("last_price", self.last_price)
+        self.j.kv_set("m1", [[c.ts, c.open, c.high, c.low, c.close, c.volume] for c in self.m1[-1440:]])
 
     # --- тик ---
     def _step_seconds(self) -> int:
@@ -159,6 +178,24 @@ class Engine:
         else:
             minutes = max(1, int(a.strategy.cadence_minutes()))
         a.next_check_ts = now_i + minutes * 60
+
+    def _update_m1(self, price: float, now_i: int) -> None:
+        """Минутные свечи из живой цены (для скальперов). При первом запуске подтягиваются с биржи."""
+        if not self.m1 and now_i - self._m1_seed_try > 1800:
+            self._m1_seed_try = now_i
+            try:
+                seed = self.market.candles(self.s.symbol, "1m", 300)
+                self.m1 = [c for c in seed if c.ts < now_i - now_i % 60]
+            except Exception as e:  # noqa: BLE001
+                log.warning("минутные свечи с биржи недоступны: %s", e)
+        minute = now_i - now_i % 60
+        if self.m1 and self.m1[-1].ts == minute:
+            last = self.m1[-1]
+            self.m1[-1] = Candle(minute, last.open, max(last.high, price), min(last.low, price), price, last.volume)
+        elif not self.m1 or self.m1[-1].ts < minute:
+            self.m1.append(Candle(minute, price, price, price, price, 0.0))
+        if len(self.m1) > 1500:
+            self.m1 = self.m1[-1440:]
 
     def _atr_pct(self, candles: list[Candle]) -> float:
         tail = candles[-60:]
@@ -283,12 +320,14 @@ class Engine:
                 out.append(a.name)
         return out
 
-    def _check_stops(self, alive: list[Agent], price: float, now_i: int, atr_pct: float = 0.01) -> list[str]:
+    def _check_stops(self, alive: list[Agent], price: float, now_i: int, atr_1h: float = 0.01) -> list[str]:
         """Каждую минуту: сопроводить позицию (безубыток, подтягивание, частичная фиксация) и,
         если цена дошла до стопа, закрыть позицию и дать агенту паузу перед новым входом."""
         hit = []
         KIND = {"trailing": "подтянутый стоп", "breakeven": "стоп в безубыток", "initial": "стоп-лосс", "": "стоп-лосс"}
         for a in alive:
+            hf = getattr(a.strategy, "timeframe", "1h") == "1m"
+            atr_pct = getattr(self, "atr_m1", 0.003) if hf else atr_1h
             pos = a.account.btc
             if abs(pos) * price >= 1.0 and not a.stop_price:
                 # страховка: позиция без стопа (после сбоя или перезапуска) получает стоп от цены входа
@@ -320,6 +359,8 @@ class Engine:
                 a.stop_price = 0.0
                 a.last_target = 0.0
                 cooldown = self.s.exit_cooldown_min if kind in {"trailing", "breakeven"} else self.risk.stop_cooldown_min
+                if hf:
+                    cooldown = 1
                 a.next_check_ts = max(a.next_check_ts, now_i + cooldown * 60)
         return hit
 
@@ -365,6 +406,8 @@ class Engine:
         self.last_price = price
         self.last_error = ""
         self.last_poll_ts = now_i
+        self._update_m1(price, now_i)
+        self.atr_m1 = self._atr_pct(self.m1) if len(self.m1) >= 20 else 0.003
         new_candle = last.ts > self.last_tick_ts
         if new_candle:
             self.last_tick_ts = last.ts
@@ -447,10 +490,12 @@ class Engine:
             if view is None:
                 view = self._view(candles, price, now_i)
             a.last_decided_ts = now_i
-            if is_intern(a):
-                self._intern_step(a, view, price, now_i, atr_pct)
+            hf = getattr(a.strategy, "timeframe", "1h") == "1m"
+            a_view, a_atr = (self.m1, self.atr_m1) if hf else (view, atr_pct)
+            if is_intern(a) or is_experiment(a):
+                self._intern_step(a, a_view, price, now_i, a_atr)
             elif is_team(a) and ok:
-                summary["decisions"].append(self._agent_step(a, view, price, now_i, why_due, atr_pct))
+                summary["decisions"].append(self._agent_step(a, a_view, price, now_i, why_due, a_atr))
                 if a.status == "fired":
                     summary["fired"].append(a.name)
             else:
@@ -510,7 +555,7 @@ class Engine:
                 "exit_price": a.exit_price, "exit_side": a.exit_side, "exit_ts": a.exit_ts}
 
     def _intern_step(self, a: Agent, candles: list[Candle], price: float, ts: int, atr_pct: float = 0.01) -> None:
-        ctx = {"exposure": a.account.exposure(price), "bars_in_position": a.bars_in_position}
+        ctx = {"exposure": a.account.exposure(price), "bars_in_position": a.bars_in_position, "entry": a.account._avg_entry}
         try:
             sig = a.strategy.decide(candles, ctx)
         except Exception as e:  # noqa: BLE001
@@ -518,6 +563,12 @@ class Engine:
             sig = hold(f"ошибка стратегии: {e}", ctx["exposure"])
         a.last_signal = sig
         if a.drawdown(price) >= self.s.agent_max_drawdown:
+            if is_experiment(a):
+                dd = a.drawdown(price) * 100
+                a.account.flatten(price, ts, "перезапуск эксперимента")
+                a.reset_account(self.s.agent_start_balance, ts)
+                self.j.event("drop", f"Эксперимент {a.name}: просадка {dd:.1f}%, счёт перезапущен с {self.s.agent_start_balance:.0f} $", a.name, ts=ts)
+                return
             self.director.drop_intern(a, price, ts, f"просадка {a.drawdown(price)*100:.1f}%")
             return
         exp_before = a.account.exposure(price)
@@ -543,7 +594,7 @@ class Engine:
             a.after_trade_tick(price)
 
     def _agent_step(self, a: Agent, candles: list[Candle], price: float, ts: int, why_due: str = "", atr_pct: float = 0.01) -> dict:
-        ctx = {"exposure": a.account.exposure(price), "lessons": a.notes, "bars_in_position": a.bars_in_position,
+        ctx = {"exposure": a.account.exposure(price), "lessons": a.notes, "bars_in_position": a.bars_in_position, "entry": a.account._avg_entry,
                "llm_min_interval": self.s.llm_min_interval_min, "llm_max_interval": self.s.llm_max_interval_min, "woke_by": why_due}
         try:
             sig = a.strategy.decide(candles, ctx)
@@ -614,8 +665,16 @@ class Engine:
             d["days"] = round(max(0.0, (now_i - a.hired_at) / 86400), 1)
             return d
 
-        snaps = [enrich(a) for a in self.agents if a.status not in {"intern", "dropped"}]
+        snaps = [enrich(a) for a in self.agents if a.status not in {"intern", "dropped", "experiment"}]
         interns = [enrich(a) for a in self.agents if is_intern(a)]
+        experiments = [enrich(a) for a in self.agents if is_experiment(a)]
+        team_names = {a.name for a in self.agents if is_team(a)}
+        desk_names = {d: {a.name for a in self.agents if is_team(a) and a.desk == d} for d in DESKS}
+        stats = {}
+        for key, since in (("7d", now_i - 7 * 86400), ("all", 0)):
+            st = self.j.trade_stats(team_names, since)
+            st["desks"] = {d: self.j.trade_stats(desk_names[d], since) for d in DESKS}
+            stats[key] = st
         interns.sort(key=lambda d: d["pnl_total"], reverse=True)
         alive = [s for s in snaps if s["status"] != "fired"]
         total = sum(s["equity"] for s in alive)
@@ -663,6 +722,9 @@ class Engine:
             "desks": desks,
             "agents": snaps,
             "interns": interns,
+            "experiments": experiments,
+            "stats": stats,
+            "m1_count": len(self.m1),
             "team_size": self.director.team_size,
             "desk_size": self.director.desk_size,
             "intern_count": self.s.intern_count,
@@ -752,7 +814,7 @@ class Engine:
                 opened_ts = t.ts
             stop = a.stop_price
             out.append({
-                "agent": a.name, "desk": a.desk, "kind": "intern" if is_intern(a) else "team", "rank": a.rank,
+                "agent": a.name, "desk": a.desk, "kind": "intern" if is_intern(a) else ("experiment" if is_experiment(a) else "team"), "rank": a.rank,
                 "side": "long" if qty > 0 else "short", "qty": round(abs(qty), 6), "notional": round(notional, 2),
                 "entry": round(entry, 2), "price": round(price, 2), "upnl": round(upnl, 2),
                 "upnl_pct": round(upnl / (entry * abs(qty)) * 100, 2) if entry and qty else 0.0,
@@ -768,7 +830,7 @@ class Engine:
         return out
 
     def _trades_24h(self, now_i: int) -> list[dict]:
-        kinds = {a.name: ("intern" if a.status in {"intern", "dropped"} else "team") for a in self.agents}
+        kinds = {a.name: ("intern" if a.status in {"intern", "dropped"} else ("experiment" if is_experiment(a) else "team")) for a in self.agents}
         out = []
         for t in self.j.trades_since(now_i - 86400, 200):
             t["kind"] = kinds.get(t["agent"], "team")
@@ -833,6 +895,49 @@ class Engine:
         self.j.event("approval", f"Одобрено: {r['title']}")
         self.save()
         return r
+
+    def manual_close(self, name: str) -> bool:
+        """Владелец закрыл позицию руками: закрываем по рынку, пауза как после выхода, запись в события."""
+        price = self.last_price
+        ts = int(time.time())
+        for a in self.agents:
+            if a.name == name and a.status not in {"fired", "dropped"} and abs(a.account.btc) > 1e-12:
+                pos = a.account.btc
+                t = a.account.flatten(price or a.last_price, ts, "закрыто владельцем")
+                if t:
+                    self.j.trade(t)
+                    self.j.decision(ts, a.name, a.strategy.family, t.side, 0.0, 1.0, "решение владельца: закрыть позицию", price, a.equity(price), True, None,
+                                    trade=t, exposure_before=a.account.exposure(price))
+                    self.j.equity(ts, a.name, a.equity(price), price)
+                    a.exit_price, a.exit_side, a.exit_ts = t.price, ("long" if pos > 0 else "short"), ts
+                    self.j.event("owner", f"{a.name}: владелец закрыл позицию" + (f", итог {t.pnl:+.2f} $" if t.pnl is not None else ""), a.name, ts=ts)
+                a.stop_price, a.best_price, a.partial_taken, a.last_target = 0.0, 0.0, False, 0.0
+                a.next_check_ts = max(a.next_check_ts, ts + self.s.exit_cooldown_min * 60)
+                self.save()
+                return True
+        return False
+
+    def manual_pause(self, name: str, resume: bool = False) -> bool:
+        """Пауза до конца дня (позиция закрывается) или снятие паузы по решению владельца."""
+        price = self.last_price
+        ts = int(time.time())
+        for a in self.agents:
+            if a.name != name or a.status not in {"active", "paused"}:
+                continue
+            if resume:
+                a.status = "active"
+                self.j.event("owner", f"{a.name}: владелец снял паузу", a.name, ts=ts)
+            else:
+                t = a.account.flatten(price or a.last_price, ts, "пауза по решению владельца")
+                if t:
+                    self.j.trade(t)
+                    self.j.equity(ts, a.name, a.equity(price), price)
+                a.status = "paused"
+                a.stop_price, a.best_price, a.partial_taken = 0.0, 0.0, False
+                self.j.event("owner", f"{a.name}: владелец поставил на паузу до конца дня", a.name, ts=ts)
+            self.save()
+            return True
+        return False
 
     def manual_fire(self, name: str) -> bool:
         price = self.last_price

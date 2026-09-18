@@ -118,6 +118,8 @@ class RiskManager:
                 return 0.0, f"правило: семейство {family} вне рынка в режиме «{regime}»"
         increasing = abs(target) > abs(current) + 1e-9
         opening = increasing and abs(current) < 1e-9
+        if getattr(agent.strategy, "high_frequency", False):
+            opening = False                            # скальперы освобождены от лимита входов и защиты от повторного входа
         # защита от повторного входа: после выхода из позиции та же сторона открывается только когда цена ушла
         if opening and self.s.reentry_move_pct > 0 and ctx.get("exit_price") and ctx.get("exit_side"):
             side = "long" if target > 0 else "short"

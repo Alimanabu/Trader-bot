@@ -17,6 +17,8 @@ class Strategy(ABC):
     family: str = "abstract"
     description: str = ""
     side: str = "long"     # long (спот, только рост) | short (только падение) | both (обе стороны)
+    timeframe: str = "1h"  # на каких свечах думает стратегия: 1h (обычно) или 1m (скальперы)
+    high_frequency: bool = False   # частая торговля: без лимита входов и защиты от повторного входа
 
     def __init__(self, params: dict | None = None):
         self.params = {**self.default_params(), **(params or {})}

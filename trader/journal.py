@@ -270,6 +270,33 @@ class Journal:
         self.kv_set("repair_short_pnl_v1", 1)
         return fixed
 
+    def trade_stats(self, names: set[str], since_ts: int = 0) -> dict:
+        """Статистика закрытых сделок: число, доля прибыльных, средние, профит-фактор, комиссии, лучшая и худшая."""
+        if not names:
+            return {"trades": 0, "closed": 0, "wins": 0, "win_rate": None, "avg_win": 0.0, "avg_loss": 0.0, "profit_factor": None,
+                    "fees": 0.0, "pnl": 0.0, "best": None, "worst": None}
+        marks = ",".join("?" * len(names))
+        rows = self._rows(f"SELECT agent, ts, pnl, fee, reason FROM trades WHERE ts>=? AND agent IN ({marks})", (since_ts, *names))
+        closed = [r for r in rows if r["pnl"] is not None]
+        wins = [r for r in closed if r["pnl"] > 0]
+        losses = [r for r in closed if r["pnl"] <= 0]
+        gw = sum(r["pnl"] for r in wins)
+        gl = -sum(r["pnl"] for r in losses)
+        best = max(closed, key=lambda r: r["pnl"], default=None)
+        worst = min(closed, key=lambda r: r["pnl"], default=None)
+        return {
+            "trades": len(rows), "closed": len(closed), "wins": len(wins),
+            "win_rate": (len(wins) / len(closed)) if closed else None,
+            "avg_win": (gw / len(wins)) if wins else 0.0, "avg_loss": (-gl / len(losses)) if losses else 0.0,
+            "profit_factor": (gw / gl) if gl > 0 else (None if not wins else float("inf")),
+            "fees": sum(r["fee"] or 0.0 for r in rows), "pnl": sum(r["pnl"] for r in closed),
+            "best": {"agent": best["agent"], "pnl": best["pnl"], "ts": best["ts"]} if best else None,
+            "worst": {"agent": worst["agent"], "pnl": worst["pnl"], "ts": worst["ts"]} if worst else None,
+        }
+
+    def all_trades(self) -> list[dict]:
+        return self._rows("SELECT * FROM trades ORDER BY id")
+
     def fees_since(self, ts: int, names: set[str]) -> float:
         if not names:
             return 0.0

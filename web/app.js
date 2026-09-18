@@ -8,12 +8,12 @@
   const time = (ts) => new Date(ts * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
   const date = (ts) => new Date(ts * 1000).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  const STATUS = { active: "работает", paused: "пауза", fired: "уволен", intern: "стажёр", dropped: "отчислен" };
+  const STATUS = { active: "работает", paused: "пауза", fired: "уволен", intern: "стажёр", dropped: "отчислен", experiment: "эксперимент" };
   const ACTION = { BUY: "войти в BTC", SELL: "выйти в USDT", HOLD: "держать" };
   const RANK = ["Стажёр", "Трейдер", "Старший трейдер", "Реальный счёт"];
   const DESK = { bulls: "Быки", bears: "Медведи", both: "Двусторонние" };
   const REG = { up: "рост", flat: "боковик", down: "падение", off: "выключено" };
-  const KIND = { knowledge: "база знаний", rule: "правило", reviser: "ревизор", strategist: "стратег", fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", stop: "стоп-лосс", demote: "в стажёры", weekly: "ротация", live_ready: "к реальным торгам", head: "директор", rank: "звание", analytics: "аналитика", funding: "финансирование", liquidation: "ликвидация", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
+  const KIND = { owner: "владелец", knowledge: "база знаний", rule: "правило", reviser: "ревизор", strategist: "стратег", fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", stop: "стоп-лосс", demote: "в стажёры", weekly: "ротация", live_ready: "к реальным торгам", head: "директор", rank: "звание", analytics: "аналитика", funding: "финансирование", liquidation: "ликвидация", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
   function tradeCell(x) {
     if (x.trade_side) return `<span class="${x.trade_side === "BUY" ? "up" : "down"}">${x.trade_side === "BUY" ? "купил" : "продал"} ${fmt(x.trade_qty, 5)} BTC</span>`;
     if (!x.executed) return `<span class="warn">${esc(x.blocked_by || "заблокировано")}</span>`;
@@ -23,8 +23,11 @@
 
   const TABS = ["home", "desks", "interns", "company", "reports"];
   let state = null, tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "home", equityData = null, summary = null, families = null, range = "all";
+  let candles = [], chartMode = "price", priceRange = 72, statsRange = "7d", deskSort = "pnl_total", deskOnlyPos = false, lastEventId = 0, notifyOn = false;
+  try { chartMode = localStorage.getItem("botz.chart") || "price"; notifyOn = localStorage.getItem("botz.notify") === "1"; } catch (_) {}
   const openRows = new Set();
   let showInternTrades = false, showInternPos = false, showLibrary = false;
+  const isShadow = (k) => k === "intern" || k === "experiment";
   const TZ = "Asia/Almaty";   // Астана, UTC+5
   const astanaTime = (d) => d.toLocaleTimeString("ru-RU", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
   const hhmm = (ts) => (ts ? astanaTime(new Date(ts * 1000)) : "—");
@@ -41,14 +44,20 @@
     const ini = (words[0]?.[0] || "?") + (words[1]?.[0] || "");
     return `<span class="ava d-${a.desk || "bulls"}" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.38)}px">${esc(ini.toUpperCase())}</span>`;
   }
-  const rankPill = (a) => a.status === "fired" || a.status === "dropped" ? "" : `<span class="pill rank-${a.rank ?? 1}">${RANK[a.rank ?? 1]}</span>`;
+  const rankPill = (a) => a.status === "fired" || a.status === "dropped" ? "" : a.status === "experiment" ? '<span class="pill gold">эксперимент</span>' : `<span class="pill rank-${a.rank ?? 1}">${RANK[a.rank ?? 1]}</span>`;
   const deskPill = (a) => `<span class="pill desk-${a.desk}">${DESK[a.desk] || a.desk}</span>`;
 
   // ---------- шапка ----------
   function renderTop(s) {
     const d = s.department;
-    $("#meta").textContent = `${s.market} · BTC ${fmt(s.price, 0)} $ · обновлено ${s.last_poll_ts ? hhmm(s.last_poll_ts) : "—"}` + (s.error ? ` · ${s.error}` : "") + (d.halted ? " · КОМПАНИЯ ОСТАНОВЛЕНА" : "");
+    const h = s.head || {};
+    const ago = candles.length > 25 ? candles[candles.length - 25].close : null;
+    const ch = ago ? (s.price / ago - 1) * 100 : null;
+    const team = s.agents.filter((a) => a.status !== "fired");
+    const day = team.reduce((x, a) => x + a.pnl_day, 0);
+    $("#meta").innerHTML = `<b class="num">BTC ${fmt(s.price, 0)} $</b>${ch != null ? ` <span class="num ${cls(ch)}">${sign(ch, 2)}%<small> 24ч</small></span>` : ""} · <span class="pill reg-${h.regime}">${REG[h.regime] || "—"}</span> · <span class="num ${cls(day)}">${sign(day)} $ сегодня</span> · <span class="dim">${s.market} ${s.last_poll_ts ? hhmm(s.last_poll_ts) : "—"}</span>` + (s.error ? ` · <span class="down">${esc(s.error)}</span>` : "") + (d.halted ? ' · <b class="down">КОМПАНИЯ ОСТАНОВЛЕНА</b>' : "");
     $("#dot").className = "dot " + (s.error ? "err" : "ok");
+    document.title = `${sign(day)} $ · BTC ${fmt(s.price, 0)} · Botz`;
   }
 
   // ---------- главная ----------
@@ -82,7 +91,7 @@
   // ---------- лог сделок за 24 часа (текстом) ----------
   const btc = (q) => Number(q).toLocaleString("ru-RU", { minimumFractionDigits: 5, maximumFractionDigits: 5 }) + " BTC";
   function tradeLine(t) {
-    const who = `<b>${esc(t.agent)}</b>${t.kind === "intern" ? ' <span class="dim">(стажёр)</span>' : ""}`;
+    const who = `<b>${esc(t.agent)}</b>${t.kind === "intern" ? ' <span class="dim">(стажёр)</span>' : t.kind === "experiment" ? ' <span class="dim">(эксперимент)</span>' : ""}`;
     const stop = /подтянутый стоп/i.test(t.reason || "") ? ' <span class="tag buy">подтянутый стоп</span>' : /безубыток/i.test(t.reason || "") ? ' <span class="tag">стоп в безубыток</span>' : /фиксация/i.test(t.reason || "") ? ' <span class="tag buy">фиксация прибыли</span>' : /стоп-лосс/i.test(t.reason || "") ? ' <span class="tag sell">стоп-лосс</span>' : /ликвидац/i.test(t.reason || "") ? ' <span class="tag sell">ликвидация</span>' : "";
     const res = t.pnl == null ? "" : ` · итог <b class="num ${cls(t.pnl)}">${sign(t.pnl)} $${t.pnl_pct != null ? ` (${sign(t.pnl_pct, 2)}%)` : ""}</b>`;
     const after = t.pos_after || 0;
@@ -94,13 +103,13 @@
   }
   function tradesHTML(s) {
     const all = s.trades_24h || [];
-    const list = showInternTrades ? all : all.filter((t) => t.kind !== "intern");
+    const list = showInternTrades ? all : all.filter((t) => !isShadow(t.kind));
     const buys = list.filter((t) => t.side === "BUY").length, sells = list.length - buys;
     const closed = list.filter((t) => t.pnl != null);
     const total = closed.reduce((x, t) => x + t.pnl, 0);
     const wins = closed.filter((t) => t.pnl > 0).length;
     return `<div class="card"><div class="cardhead"><h3>Сделки за 24 часа</h3>
-        <label class="toggle"><input type="checkbox" id="toggle-interns" ${showInternTrades ? "checked" : ""}> показывать стажёров</label></div>
+        <label class="toggle"><input type="checkbox" id="toggle-interns" ${showInternTrades ? "checked" : ""}> стажёры и эксперименты</label></div>
       <div class="note num">${list.length ? `${buys} покупок · ${sells} продаж${closed.length ? ` · закрыто ${closed.length}, в плюсе ${wins} · итог закрытых <b class="${cls(total)}">${sign(total)} $</b>` : ""}` : "за последние сутки сделок не было: трейдеры ждут сигнала"}</div>
       ${list.length ? `<ul class="tlog">${list.slice(0, 60).map(tradeLine).join("")}</ul>` : ""}</div>`;
   }
@@ -111,20 +120,20 @@
     const sideTag = p.side === "long" ? '<span class="pill desk-bulls">лонг</span>' : '<span class="pill desk-bears">шорт</span>';
     const SK = { trailing: "подтянутый стоп", breakeven: "стоп в безубытке", initial: "стоп" };
     const stop = p.stop ? `${SK[p.stop_kind] || "стоп"} <span class="num">${fmt(p.stop, 0)} $</span> <span class="dim num">(${sign(p.stop_pct, 1)}%)</span>${p.partial_taken ? ' · <span class="up">половина зафиксирована</span>' : ""}` : '<span class="dim">без стопа</span>';
-    return `<li class="pos ${p.stop_kind === "trailing" ? "protected" : ""}"><div class="phead">${avatar({ name: p.agent, desk: p.desk }, 30)}<div class="pname"><b>${esc(p.agent)}</b>${p.kind === "intern" ? ' <span class="dim">(стажёр)</span>' : ""} ${sideTag}<div class="dim num">${fmt(p.exposure * 100, 0)}% капитала · ${btc(p.qty)} · ${fmt(p.notional, 0)} $</div></div>
+    return `<li class="pos ${p.stop_kind === "trailing" ? "protected" : ""}" data-name="${esc(p.agent)}"><div class="phead">${avatar({ name: p.agent, desk: p.desk }, 30)}<div class="pname"><b>${esc(p.agent)}</b>${p.kind === "intern" ? ' <span class="dim">(стажёр)</span>' : p.kind === "experiment" ? ' <span class="dim">(эксперимент)</span>' : ""} ${sideTag}<div class="dim num">${fmt(p.exposure * 100, 0)}% капитала · ${btc(p.qty)} · ${fmt(p.notional, 0)} $</div></div>
         <div class="pres num"><b class="${cls(p.upnl)}">${sign(p.upnl)} $</b><small class="${cls(p.upnl_pct)}">${sign(p.upnl_pct, 2)}%</small></div></div>
-      <div class="pbody num">вход <b>${fmt(p.entry, 0)} $</b> · сейчас <b>${fmt(p.price, 0)} $</b> · ${stop} · в сделке ${dur(p.hours)}</div>
+      <div class="pbody num">вход <b>${fmt(p.entry, 0)} $</b> · сейчас <b>${fmt(p.price, 0)} $</b> · ${stop} · в сделке ${dur(p.hours)} <button class="btn mini act-close" data-name="${esc(p.agent)}">закрыть</button></div>
       ${p.reason ? `<div class="pbody dim">${esc(p.reason)}</div>` : ""}</li>`;
   }
   function positionsHTML(s) {
     const all = s.positions || [];
-    const list = showInternPos ? all : all.filter((p) => p.kind !== "intern");
+    const list = showInternPos ? all : all.filter((p) => !isShadow(p.kind));
     const longs = list.filter((p) => p.side === "long"), shorts = list.filter((p) => p.side === "short");
     const total = list.reduce((x, p) => x + p.upnl, 0);
     const inMarket = list.reduce((x, p) => x + p.notional, 0);
     const team = s.agents.filter((a) => a.status !== "fired").length;
     return `<div class="card"><div class="cardhead"><h3>Открытые позиции · ${list.length}</h3>
-        <label class="toggle"><input type="checkbox" id="toggle-pos-interns" ${showInternPos ? "checked" : ""}> показывать стажёров</label></div>
+        <label class="toggle"><input type="checkbox" id="toggle-pos-interns" ${showInternPos ? "checked" : ""}> стажёры и эксперименты</label></div>
       <div class="note num">${list.length ? `лонгов ${longs.length} · шортов ${shorts.length} · в рынке ${fmt(inMarket, 0)} $ · на бумаге сейчас <b class="${cls(total)}">${sign(total)} $</b>${!showInternPos ? ` · вне рынка ${Math.max(0, team - list.length)} трейдеров` : ""}` : "сейчас все вне рынка: ждут сигнала"}</div>
       ${list.length ? `<ul class="plist">${list.map(positionLine).join("")}</ul>` : ""}
       <div class="note" style="margin-top:8px">Сопровождение позиций: при прибыли в 1·ATR стоп переносится в безубыток, дальше подтягивается за лучшей ценой на 2·ATR и назад не отступает. При прибыли в 3·ATR фиксируется половина позиции, остаток идёт с подтянутым стопом. После выхода в плюс пауза 2 часа, повторный вход в ту же сторону только после ухода цены на 0,5%, не больше 4 входов в день.</div></div>`;
@@ -158,13 +167,53 @@
         </div></div></div>`;
   }
 
+  function chartCardHTML() {
+    const price = chartMode === "price";
+    return `<div class="card chart o4"><div class="cardhead"><h3>${price ? "Цена BTC и позиции" : "Результат компании, $"}</h3>
+        <div class="range"><button data-mode="price" class="${price ? "active" : ""}">Цена</button><button data-mode="pnl" class="${!price ? "active" : ""}">Результат</button></div></div>
+      <div class="range" style="margin-top:6px">${price
+        ? [[24, "24 ч"], [72, "3 дня"], [168, "7 дней"]].map(([n, l]) => `<button data-pr="${n}" class="${priceRange === n ? "active" : ""}">${l}</button>`).join("")
+        : `<button data-r="day" class="${range === "day" ? "active" : ""}">День</button><button data-r="week" class="${range === "week" ? "active" : ""}">Неделя</button><button data-r="all" class="${range === "all" ? "active" : ""}">Всё время</button>`}</div>
+      <canvas id="chart"></canvas><div class="tip" id="tip"></div><div class="note" id="chart-note"></div>
+      ${price ? '<div class="legend"><i class="lg-long"></i>вход лонг <i class="lg-short"></i>вход шорт <i class="lg-stop"></i>стоп <span class="lg-buy">▲</span> покупка <span class="lg-sell">▼</span> продажа</div>' : ""}</div>`;
+  }
+  function directorMiniHTML(s) {
+    const h = s.head || {}, d = h.director || {}, caps = h.caps || {};
+    return `<div class="card o7 link" data-go="company"><h3>Директор · ${esc(d.name || "")}</h3>
+      <div class="caps">${Object.keys(DESK).map((k) => `<div><span>${DESK[k]}</span><div class="capbar d-${k}"><i style="width:${Math.round((caps[k] ?? 1) * 100)}%"></i></div><b class="num">${fmt((caps[k] ?? 1) * 100, 0)}%</b></div>`).join("")}</div>
+      <div class="note num" style="margin-top:6px">режим ${REG[h.regime] || "—"} (${esc(h.source || "правила")}) · рейтинг ${d.rating ?? 50} · премия ${sign(d.bonus || 0)} $${h.intraday ? ` · внутридневной пересмотр ${hhmm(h.intraday.ts)}` : ""}</div></div>`;
+  }
+  function statsHTML(s) {
+    const st = (s.stats || {})[statsRange] || {};
+    const pf = st.profit_factor == null ? "—" : st.profit_factor === Infinity || st.profit_factor > 99 ? "∞" : fmt(st.profit_factor, 2);
+    const wr = st.win_rate == null ? "—" : fmt(st.win_rate * 100, 0) + "%";
+    return `<div class="card o8"><div class="cardhead"><h3>Статистика сделок</h3><div class="range"><button data-sr="7d" class="${statsRange === "7d" ? "active" : ""}">7 дней</button><button data-sr="all" class="${statsRange === "all" ? "active" : ""}">Всё время</button></div></div>
+      <div class="stat" style="margin-top:8px">
+        <div><div class="k">Закрыто сделок</div><div class="v num">${st.closed ?? 0}</div><div class="note">всего сделок ${st.trades ?? 0}</div></div>
+        <div><div class="k">Прибыльных</div><div class="v num ${st.win_rate != null ? (st.win_rate >= 0.5 ? "up" : "down") : ""}">${wr}</div></div>
+        <div><div class="k">Профит-фактор</div><div class="v num ${st.profit_factor != null ? (st.profit_factor >= 1 ? "up" : "down") : ""}">${pf}</div><div class="note">выигрыш / проигрыш</div></div>
+        <div><div class="k">Средняя прибыль · убыток</div><div class="v num" style="font-size:15px"><span class="up">${sign(st.avg_win || 0)}</span> · <span class="down">${sign(st.avg_loss || 0)}</span></div></div>
+        <div><div class="k">Итог закрытых</div><div class="v num ${cls(st.pnl)}">${sign(st.pnl || 0)} $</div></div>
+        <div><div class="k">Комиссии</div><div class="v num down">${fmt(st.fees || 0)} $</div><div class="note">${st.pnl && st.fees ? `${fmt(Math.abs(st.fees / (Math.abs(st.pnl) || 1)) * 100, 0)}% от итога` : ""}</div></div>
+      </div>
+      ${st.best ? `<div class="note num" style="margin-top:8px">Лучшая: ${esc(st.best.agent)} <b class="up">${sign(st.best.pnl)} $</b> (${time(st.best.ts)}) · худшая: ${esc(st.worst.agent)} <b class="down">${sign(st.worst.pnl)} $</b> (${time(st.worst.ts)})</div>` : ""}
+      <div class="tbl" style="margin-top:8px"><table><tr><th>Деск</th><th class="r">Сделок</th><th class="r">Прибыльных</th><th class="r">Итог</th><th class="r">Комиссии</th></tr>
+        ${Object.keys(DESK).map((k) => { const d = (st.desks || {})[k] || {}; return `<tr><td>${DESK[k]}</td><td class="r num">${d.closed ?? 0}</td><td class="r num">${d.win_rate == null ? "—" : fmt(d.win_rate * 100, 0) + "%"}</td><td class="r num ${cls(d.pnl)}">${sign(d.pnl || 0)} $</td><td class="r num">${fmt(d.fees || 0)} $</td></tr>`; }).join("")}</table></div></div>`;
+  }
   function homeHTML(s) {
-    return heroHTML(s) + approvalsHTML(s) + desksSummaryHTML(s) + positionsHTML(s) + tradesHTML(s) + `
-      <div class="card chart"><h3>Результат компании, $</h3>
-        <div class="range"><button data-r="day" class="${range === "day" ? "active" : ""}">День</button><button data-r="week" class="${range === "week" ? "active" : ""}">Неделя</button><button data-r="all" class="${range === "all" ? "active" : ""}">Всё время</button></div>
-        <canvas id="chart"></canvas><div class="tip" id="tip"></div><div class="note" id="chart-note"></div></div>
-      ${allocHTML(s)}
-      <div class="card"><h3>Последние события</h3><ul class="events">${eventsHTML(s.events.slice(0, 8))}</ul></div>`;
+    return `<div class="term"><div class="col-main">
+        <div class="o1">${heroHTML(s)}</div>
+        ${chartCardHTML()}
+        <div class="o3">${positionsHTML(s)}</div>
+        <div class="o5">${tradesHTML(s)}</div>
+        <div class="o9">${allocHTML(s)}</div>
+      </div><div class="col-side">
+        <div class="o0">${approvalsHTML(s)}</div>
+        <div class="o2">${desksSummaryHTML(s)}</div>
+        ${directorMiniHTML(s)}
+        ${statsHTML(s)}
+        <div class="card o10"><h3>Последние события</h3><ul class="events">${eventsHTML(s.events.slice(0, 10))}</ul></div>
+      </div></div>`;
   }
 
   // ---------- раскрывающаяся строка агента ----------
@@ -215,8 +264,11 @@
     const h = s.head || {};
     let html = `<h2 class="sec">Три деска · ${alive.length} из ${s.team_size} трейдеров</h2>
       <div class="note" style="margin-bottom:4px">Каждый трейдер торгует своими 1000 $ по своей теории и сам решает, как часто смотреть на рынок (колонка «Ритм»). Быки покупают только на рост (спот). Медведи ставят только на падение, двусторонние торгуют в обе стороны: у них фьючерсный демосчёт без плеча, со стопом и ставкой финансирования. Директор раз в день решает, какую долю капитала может использовать каждый деск. По понедельникам ротация внутри деска: минус за неделю отправляет в стажёры, ${s.head?.senior_weeks || 2} недели в плюсе подряд дают звание старшего трейдера, три недели подряд делают кандидатом на реальный счёт. У каждой позиции есть стоп-лосс, он проверяется каждую минуту.</div>`;
+    html += `<div class="toolbar"><label>Сортировка <select id="desk-sort"><option value="pnl_total" ${deskSort === "pnl_total" ? "selected" : ""}>за всё время</option><option value="pnl_24h" ${deskSort === "pnl_24h" ? "selected" : ""}>за 24 часа</option><option value="pnl_day" ${deskSort === "pnl_day" ? "selected" : ""}>за сегодня</option><option value="drawdown" ${deskSort === "drawdown" ? "selected" : ""}>по просадке</option><option value="name" ${deskSort === "name" ? "selected" : ""}>по имени</option></select></label>
+      <label class="toggle"><input type="checkbox" id="desk-onlypos" ${deskOnlyPos ? "checked" : ""}> только в позиции</label></div>`;
+    const sorter = (a, b) => deskSort === "name" ? a.name.localeCompare(b.name, "ru") : deskSort === "drawdown" ? b.drawdown - a.drawdown : b[deskSort] - a[deskSort];
     for (const d of s.desks || []) {
-      const rows = alive.filter((a) => a.desk === d.key).sort((a, b) => b.pnl_total - a.pnl_total);
+      const rows = alive.filter((a) => a.desk === d.key && (!deskOnlyPos || Math.abs(a.exposure) > 1e-9)).sort(sorter);
       const wk = (h.weeks || []).slice(-1)[0]?.desks?.[d.key];
       html += `<div class="card list desk-list d-${d.key}"><div class="dtitle"><div><b>${esc(d.label)}</b> <span class="muted num">${d.agents} из ${d.size}</span><div class="note">${esc(d.description)}</div></div>
           <div class="dkpi num"><div><span>капитал</span><b>${fmt(d.equity, 0)} $</b></div><div><span>сегодня</span><b class="${cls(d.pnl_day)}">${sign(d.pnl_day)} $</b></div><div><span>неделя</span><b class="${cls(d.pnl_week)}">${sign(d.pnl_week)} $</b></div><div><span>потолок</span><b>${fmt(d.cap * 100, 0)}%</b></div></div></div>
@@ -326,6 +378,21 @@
         bench.map((b) => `<tr><td>${esc(b.strategy)}</td><td>${Object.entries(b.params).map(([k, v]) => `<span class="tag">${k}=${v}</span>`).join("")}</td><td class="r num ${cls(b.stats.return_pct)}">${sign(b.stats.return_pct, 1)}%</td><td class="r num ${cls(b.stats.oos_return_pct)}">${b.stats.oos_return_pct == null ? "—" : sign(b.stats.oos_return_pct, 1) + "%"}</td><td class="r num">${fmt(b.score, 1)}</td></tr>`).join("") + "</table></div>" : ""}
       ${showLibrary ? `<div class="tbl" style="margin-top:10px"><table>${fam.map((f) => `<tr><td><b>${esc(f.label)}</b>${f.side === "short" ? ' <span class="pill desk-bears">медведи</span>' : f.side === "both" ? ' <span class="pill desk-both">двусторонние</span>' : ' <span class="pill desk-bulls">быки</span>'}<div class="note">${esc(f.description)}</div></td></tr>`).join("")}</table></div>` : ""}</div>`;
   }
+  function experimentsHTML(s) {
+    const ex = s.experiments || [];
+    if (!ex.length) return "";
+    const tr = (s.trades_24h || []).filter((t) => t.kind === "experiment");
+    const closed = tr.filter((t) => t.pnl != null), wins = closed.filter((t) => t.pnl > 0);
+    const fees = tr.reduce((x, t) => x + (t.fee || 0), 0);
+    return `<div class="card"><h3>Эксперименты · вне десков</h3>
+      <div class="stat"><div><div class="k">Сделок за 24 ч</div><div class="v num">${tr.length}</div></div>
+        <div><div class="k">Закрыто · в плюсе</div><div class="v num">${closed.length} · ${wins.length}</div></div>
+        <div><div class="k">Итог за 24 ч</div><div class="v num ${cls(closed.reduce((x, t) => x + t.pnl, 0))}">${sign(closed.reduce((x, t) => x + t.pnl, 0))} $</div></div>
+        <div><div class="k">Комиссии за 24 ч</div><div class="v num down">${fmt(fees)} $</div></div>
+        <div><div class="k">Минутных свечей</div><div class="v num">${s.m1_count ?? 0}</div></div></div>
+      <div class="note" style="margin:8px 0">Скальпер торгует на минутных свечах на своём счёте, в капитал компании не входит, лимиты входов на него не действуют. Он проверяет главный вопрос частой торговли: покрывает ли прибыль комиссию 0,1% за сделку. Если счёт проседает на 10%, он перезапускается с 1000 $. Сравнивайте «итог» и «комиссии»: пока комиссии больше, частая торговля не окупается.</div>
+      <div class="list"><div class="acc-head"><span>Агент</span><span>Ритм</span><span>За 24 ч</span><span>За всё время</span><span></span></div>${ex.map((a) => agentRow(a)).join("")}</div></div>`;
+  }
   function learningHTML(s) {
     const l = s.learning || { week: {}, events: [] };
     return `<div class="card"><h3>Обучение</h3><div class="stat">
@@ -368,7 +435,7 @@
     </div>`;
   }
   function companyHTML(s) {
-    return `<h2 class="sec">Компания Botz · отделы</h2>` + approvalsHTML(s) + directorHTML(s) + knowledgeHTML(s) + analyticsHTML(s) + riskHTML(s) + scienceHTML(s) + learningHTML(s);
+    return `<h2 class="sec">Компания Botz · отделы</h2>` + approvalsHTML(s) + directorHTML(s) + knowledgeHTML(s) + analyticsHTML(s) + riskHTML(s) + scienceHTML(s) + experimentsHTML(s) + learningHTML(s);
   }
 
   // ---------- отчёты ----------
@@ -391,7 +458,8 @@
       <div class="card"><h3>Отчёты директора</h3>${reports || '<div class="note">Первый отчёт появится в конце дня.</div>'}</div>
       <div class="card"><h3>Капитал по дням</h3>${daily ? `<div class="tbl"><table><tr><th>День</th><th class="r">Капитал</th><th class="r">Изменение</th></tr>${daily}</table></div>` : '<div class="note">Появится после первого дня.</div>'}</div>
       <div class="card"><h3>За всё время по трейдерам</h3><div class="tbl"><table><tr><th>Трейдер</th><th class="r">Всего</th><th class="r">Сегодня</th><th class="r">Сделок</th><th class="r">Побед</th><th class="r">Просадка</th></tr>${allRows}</table></div></div>
-      <div class="card"><h3>Все события</h3><ul class="events">${eventsHTML(s.events)}</ul></div>`;
+      <div class="card"><h3>Все события</h3><ul class="events">${eventsHTML(s.events)}</ul></div>
+      <div class="card"><h3>Экспорт</h3><div class="note">Все сделки компании в таблицу (CSV), открывается в Excel и Google Таблицах.</div><p><a class="btn" href="/api/trades.csv" download>Скачать сделки CSV</a></p></div>`;
   }
 
   // ---------- общие куски ----------
@@ -412,8 +480,70 @@
     }).join("");
   }
 
+  // ---------- график цены со свечами и позициями ----------
+  function drawPriceChart() {
+    const canvas = $("#chart"); if (!canvas || !candles.length) return;
+    const pts = candles.slice(-priceRange);
+    const note = $("#chart-note"), tip = $("#tip");
+    const dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, W, H);
+    const pos = (state.positions || []).filter((p) => showInternPos || !isShadow(p.kind));
+    const trades = (state.trades_24h || []).filter((t) => (showInternTrades || !isShadow(t.kind)) && t.ts >= pts[0].ts);
+    const lows = pts.map((c) => c.low), highs = pts.map((c) => c.high);
+    let min = Math.min(...lows, ...pos.map((p) => p.stop || Infinity)), max = Math.max(...highs, ...pos.map((p) => p.entry));
+    const pad = (max - min) * 0.06 || 1; min -= pad; max += pad;
+    const L = 6, R = 58, T = 8, B = 18, step = pts[pts.length - 1].ts - pts[pts.length - 2].ts || 3600;
+    const x = (ts) => L + ((ts - pts[0].ts) / (pts[pts.length - 1].ts + step - pts[0].ts)) * (W - L - R);
+    const y = (v) => T + (1 - (v - min) / (max - min)) * (H - T - B);
+    const cw = Math.max(1, ((W - L - R) / pts.length) * 0.65);
+    const css = getComputedStyle(document.documentElement);
+    const col = (n) => css.getPropertyValue(n).trim();
+    ctx.strokeStyle = col("--line"); ctx.lineWidth = 1; ctx.fillStyle = col("--muted"); ctx.font = "10px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.textAlign = "left";
+    for (let i = 0; i <= 4; i++) { const v = min + ((max - min) * i) / 4, yy = y(v); ctx.beginPath(); ctx.moveTo(L, yy); ctx.lineTo(W - R, yy); ctx.stroke(); ctx.fillText(fmt(v, 0), W - R + 4, yy + 3); }
+    pts.forEach((c) => {
+      const up = c.close >= c.open, cx = x(c.ts) + cw / 2;
+      ctx.strokeStyle = ctx.fillStyle = up ? col("--up") : col("--down");
+      ctx.beginPath(); ctx.moveTo(cx, y(c.high)); ctx.lineTo(cx, y(c.low)); ctx.stroke();
+      const top = y(Math.max(c.open, c.close)), hgt = Math.max(1, Math.abs(y(c.open) - y(c.close)));
+      ctx.fillRect(x(c.ts), top, cw, hgt);
+    });
+    // текущая цена
+    ctx.setLineDash([3, 3]); ctx.strokeStyle = col("--text"); ctx.beginPath(); ctx.moveTo(L, y(state.price)); ctx.lineTo(W - R, y(state.price)); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = col("--text"); ctx.fillRect(W - R + 1, y(state.price) - 7, R - 2, 14); ctx.fillStyle = col("--bg"); ctx.font = "bold 10px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.fillText(fmt(state.price, 0), W - R + 4, y(state.price) + 3);
+    // входы и стопы открытых позиций
+    ctx.font = "9px -apple-system, Segoe UI, Roboto, sans-serif";
+    const usedY = [];
+    const labelY = (yy) => { let v = yy - 2; while (usedY.some((u) => Math.abs(u - v) < 10)) v -= 10; usedY.push(v); return v; };
+    [...pos].sort((a, b) => b.entry - a.entry).forEach((p) => {
+      const c = p.side === "long" ? col("--up") : col("--down");
+      ctx.setLineDash([6, 3]); ctx.strokeStyle = c; ctx.globalAlpha = 0.8; ctx.beginPath(); ctx.moveTo(L, y(p.entry)); ctx.lineTo(W - R, y(p.entry)); ctx.stroke();
+      if (p.stop) { ctx.setLineDash([2, 3]); ctx.strokeStyle = col("--warn"); ctx.beginPath(); ctx.moveTo(L, y(p.stop)); ctx.lineTo(W - R, y(p.stop)); ctx.stroke(); }
+      ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.fillStyle = c; ctx.fillText(p.agent.replace(/\s*\(.*\)/, "").slice(0, 18), L + 2, labelY(y(p.entry)));
+    });
+    // сделки
+    trades.forEach((t) => {
+      const tx = x(t.ts), ty = y(t.price); ctx.fillStyle = t.side === "BUY" ? col("--up") : col("--down"); ctx.beginPath();
+      if (t.side === "BUY") { ctx.moveTo(tx, ty + 7); ctx.lineTo(tx - 4, ty + 13); ctx.lineTo(tx + 4, ty + 13); } else { ctx.moveTo(tx, ty - 7); ctx.lineTo(tx - 4, ty - 13); ctx.lineTo(tx + 4, ty - 13); }
+      ctx.closePath(); ctx.fill();
+    });
+    ctx.fillStyle = col("--muted"); ctx.font = "10px -apple-system, Segoe UI, Roboto, sans-serif"; ctx.textAlign = "left"; ctx.fillText(time(pts[0].ts), L, H - 4); ctx.textAlign = "right"; ctx.fillText(time(pts[pts.length - 1].ts), W - R, H - 4);
+    const first = pts[0].open, last = pts[pts.length - 1].close;
+    note.innerHTML = `за период <b class="num ${cls(last - first)}">${sign((last / first - 1) * 100, 2)}%</b> · мин ${fmt(Math.min(...lows), 0)} · макс ${fmt(Math.max(...highs), 0)} · открытых позиций ${pos.length}, сделок на графике ${trades.length}`;
+    const onMove = (ev) => {
+      const b = canvas.getBoundingClientRect(); const px = (ev.touches ? ev.touches[0].clientX : ev.clientX) - b.left;
+      const i = Math.max(0, Math.min(pts.length - 1, Math.floor(((px - L) / (W - L - R)) * pts.length)));
+      const c = pts[i]; if (!c) return;
+      tip.style.display = "block"; tip.innerHTML = `${time(c.ts)}<br><span class="num">О ${fmt(c.open, 0)} · В ${fmt(c.high, 0)} · Н ${fmt(c.low, 0)} · З <b class="${cls(c.close - c.open)}">${fmt(c.close, 0)}</b></span>`;
+      tip.style.left = Math.min(W - 190, Math.max(0, x(c.ts) - 80)) + "px"; tip.style.top = Math.max(0, y(c.high) - 44) + "px";
+    };
+    canvas.onmousemove = onMove; canvas.ontouchstart = onMove; canvas.ontouchmove = onMove;
+    canvas.onmouseleave = () => (tip.style.display = "none");
+  }
+
   // ---------- график капитала ----------
   async function drawChart() {
+    if (chartMode === "price") return drawPriceChart();
     const canvas = $("#chart"); if (!canvas) return;
     if (!equityData) equityData = await api("/api/curve");
     let pts = equityData.map((p) => [p.ts, p.pnl]);
@@ -469,11 +599,14 @@
       <div class="note" style="margin-bottom:6px">«Цель» это какую долю капитала агент хочет держать в позиции (минус = шорт). Сделка происходит только если цель отличается от текущего состояния. В журнал попадают сделки, смена цели и контрольная запись раз в час. «Цена через 4 ч» заполняется с задержкой.</div>
       <div class="tbl"><table><tr><th>Время</th><th>Цель</th><th>Сделка</th><th class="r">Цена BTC</th><th class="r">Цена через 4 ч</th><th>Обоснование</th></tr>
       ${d.decisions.map((x) => `<tr><td class="num">${time(x.ts)}</td><td>${ACTION[x.action] || x.action}<div class="dim">${x.target_exposure < 0 ? "шорт " + fmt(-x.target_exposure * 100, 0) + "%" : fmt(x.target_exposure * 100, 0) + "% в BTC"}</div></td><td>${tradeCell(x)}</td><td class="r num">${fmt(x.price, 0)}</td><td class="r num ${cls(x.outcome_pct)}">${x.outcome_pct == null ? "—" : sign(x.outcome_pct) + "%"}</td><td class="note">${esc(x.reason)}</td></tr>`).join("")}</table></div>
-      ${a.status !== "fired" && a.status !== "dropped" ? `<p><button class="btn danger" id="modal-fire">${a.status === "intern" ? "Отчислить стажёра" : "Уволить трейдера"}</button></p>` : ""}`;
+      ${a.status !== "fired" && a.status !== "dropped" ? `<p class="actions-row">${Math.abs(a.exposure) > 1e-9 ? '<button class="btn" id="modal-closepos">Закрыть позицию</button>' : ""}${a.status === "active" ? '<button class="btn" id="modal-pause">Пауза до завтра</button>' : a.status === "paused" ? '<button class="btn" id="modal-resume">Снять паузу</button>' : ""}<button class="btn danger" id="modal-fire">${a.status === "intern" ? "Отчислить стажёра" : a.status === "experiment" ? "Остановить эксперимент" : "Уволить трейдера"}</button></p>` : ""}`;
     $("#modal").classList.add("open");
     $("#modal-close").onclick = () => $("#modal").classList.remove("open");
-    const f = $("#modal-fire");
-    if (f) f.onclick = async () => { if (confirm(`${a.status === "intern" ? "Отчислить" : "Уволить"} ${a.name}?`)) { await api(`/api/agents/${encodeURIComponent(name)}/fire`, { method: "POST" }); $("#modal").classList.remove("open"); refresh(true); } };
+    const act = (id, url, q) => { const b = $(id); if (b) b.onclick = async () => { if (confirm(q)) { await api(url, { method: "POST" }); $("#modal").classList.remove("open"); refresh(true); } }; };
+    act("#modal-fire", `/api/agents/${encodeURIComponent(name)}/fire`, `${a.status === "intern" ? "Отчислить" : a.status === "experiment" ? "Остановить" : "Уволить"} ${a.name}?`);
+    act("#modal-closepos", `/api/agents/${encodeURIComponent(name)}/close`, `Закрыть позицию ${a.name} по рынку?`);
+    act("#modal-pause", `/api/agents/${encodeURIComponent(name)}/pause`, `Закрыть позицию и поставить ${a.name} на паузу до завтра?`);
+    act("#modal-resume", `/api/agents/${encodeURIComponent(name)}/resume`, `Снять паузу с ${a.name}?`);
   }
 
   // ---------- рендер вкладки ----------
@@ -488,12 +621,18 @@
     const view = $("#view");
     const html = tab === "home" ? homeHTML(state) : tab === "desks" ? desksHTML(state) : tab === "interns" ? internsHTML(state) : tab === "company" ? companyHTML(state) : reportsHTML(state);
     view.innerHTML = html;
-    $$("[data-name]", view).forEach((el) => { if (!el.classList.contains("acc")) el.addEventListener("click", (e) => { if (e.target.closest(".acc")) return; openAgent(el.dataset.name); }); });
+    $$("[data-name]", view).forEach((el) => { if (!el.classList.contains("acc")) el.addEventListener("click", (e) => { if (e.target.closest(".acc") || e.target.closest("button")) return; openAgent(el.dataset.name); }); });
     $$("[data-go]", view).forEach((el) => el.addEventListener("click", () => goTab(el.dataset.go)));
     $$(".open-agent", view).forEach((b) => b.addEventListener("click", (e) => { e.preventDefault(); openAgent(b.dataset.name); }));
     $$("details.acc", view).forEach((d) => { if (openRows.has(d.dataset.name)) d.open = true; d.addEventListener("toggle", () => { if (d.open) openRows.add(d.dataset.name); else openRows.delete(d.dataset.name); }); });
     $$(".approval button", view).forEach((b) => b.addEventListener("click", async () => { await api(`/api/approvals/${b.dataset.id}/${b.dataset.d}`, { method: "POST" }); refresh(true); }));
-    $$(".range button", view).forEach((b) => b.addEventListener("click", () => { range = b.dataset.r; $$(".range button", view).forEach((x) => x.classList.toggle("active", x === b)); drawChart(); }));
+    $$(".range button[data-r]", view).forEach((b) => b.addEventListener("click", () => { range = b.dataset.r; $$(".range button[data-r]", view).forEach((x) => x.classList.toggle("active", x === b)); drawChart(); }));
+    $$(".range button[data-pr]", view).forEach((b) => b.addEventListener("click", () => { priceRange = Number(b.dataset.pr); render(); }));
+    $$(".range button[data-mode]", view).forEach((b) => b.addEventListener("click", () => { chartMode = b.dataset.mode; try { localStorage.setItem("botz.chart", chartMode); } catch (_) {} render(); }));
+    $$(".range button[data-sr]", view).forEach((b) => b.addEventListener("click", () => { statsRange = b.dataset.sr; render(); }));
+    $$(".act-close", view).forEach((b) => b.addEventListener("click", async (e) => { e.stopPropagation(); e.preventDefault(); if (confirm(`Закрыть позицию ${b.dataset.name} по рынку?`)) { await api(`/api/agents/${encodeURIComponent(b.dataset.name)}/close`, { method: "POST" }); refresh(true); } }));
+    const ds = $("#desk-sort", view); if (ds) ds.onchange = () => { deskSort = ds.value; render(); };
+    const dp = $("#desk-onlypos", view); if (dp) dp.onchange = () => { deskOnlyPos = dp.checked; render(); };
     const rb = $("#btn-research", view);
     if (rb) rb.onclick = async () => { rb.disabled = true; rb.textContent = "Считаю, около минуты…"; try { await api("/api/research", { method: "POST" }); } finally { rb.disabled = false; rb.textContent = "Запустить исследование"; refresh(true); } };
     $$(".kb-status", view).forEach((b) => b.addEventListener("click", async (e) => { e.stopPropagation(); await api(`/api/knowledge/${b.dataset.id}/${b.dataset.st}`, { method: "POST" }); refresh(true); }));
@@ -508,14 +647,50 @@
 
   async function refresh(force) {
     try {
-      const [st, sm, fam] = await Promise.all([api("/api/state"), (tab === "reports" || !summary || force) ? api("/api/summary") : summary, families || api("/api/families")]);
-      state = st; summary = sm; families = fam; equityData = null;
-      renderTop(state); render();
+      const [st, sm, fam, cd] = await Promise.all([api("/api/state"), (tab === "reports" || !summary || force) ? api("/api/summary") : summary, families || api("/api/families"), api("/api/candles?limit=170")]);
+      state = st; summary = sm; families = fam; candles = cd; equityData = null;
+      renderTop(state); render(); notifyNew(state);
     } catch (e) {
       $("#meta").textContent = "нет связи с сервером: " + e.message; $("#dot").className = "dot err";
     }
   }
 
+  // уведомления в браузере: новые заявки на решение, стопы, действия директора
+  const NOTIFY_KINDS = new Set(["stop", "approval", "head", "fire", "halt", "liquidation", "live_ready", "weekly", "owner"]);
+  function notifyNew(s) {
+    const ev = s.events || [];
+    const maxId = ev.reduce((m, e) => Math.max(m, e.id || 0), 0);
+    if (!lastEventId) { lastEventId = maxId; return; }
+    const fresh = ev.filter((e) => e.id > lastEventId && NOTIFY_KINDS.has(e.kind));
+    lastEventId = Math.max(lastEventId, maxId);
+    if (!notifyOn || !("Notification" in window) || Notification.permission !== "granted") return;
+    fresh.slice(0, 3).forEach((e) => { try { new Notification(`Botz · ${KIND[e.kind] || e.kind}`, { body: e.message.slice(0, 160), tag: "botz-" + e.id }); } catch (_) {} });
+    if (s.approvals.length && fresh.some((e) => e.kind === "live_ready" || e.kind === "weekly")) { try { new Notification("Botz · нужно ваше решение", { body: s.approvals[0].title }); } catch (_) {} }
+  }
+  function applyTheme() {
+    let light = false; try { light = localStorage.getItem("botz.theme") === "light"; } catch (_) {}
+    document.documentElement.classList.toggle("light", light);
+    const b = $("#btn-theme"); if (b) b.title = light ? "Тёмная тема" : "Светлая тема";
+    document.querySelector('meta[name="theme-color"]').setAttribute("content", light ? "#f4f6fb" : "#0b0d12");
+  }
+  applyTheme();
+  $("#btn-theme").onclick = () => { let light = document.documentElement.classList.contains("light"); try { localStorage.setItem("botz.theme", light ? "dark" : "light"); } catch (_) {} applyTheme(); render(); };
+  const bell = $("#btn-notify");
+  const paintBell = () => { bell.classList.toggle("on", notifyOn); bell.title = notifyOn ? "Уведомления включены" : "Включить уведомления"; };
+  paintBell();
+  bell.onclick = async () => {
+    if (!("Notification" in window)) { alert("Браузер не поддерживает уведомления"); return; }
+    if (!notifyOn) { const p = await Notification.requestPermission(); if (p !== "granted") { alert("Разрешите уведомления в настройках браузера"); return; } }
+    notifyOn = !notifyOn; try { localStorage.setItem("botz.notify", notifyOn ? "1" : "0"); } catch (_) {} paintBell();
+  };
+  document.addEventListener("keydown", (e) => {
+    if (e.target.closest("input, select, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
+    const idx = ["1", "2", "3", "4", "5"].indexOf(e.key);
+    if (idx >= 0) goTab(TABS[idx]);
+    else if (e.key === "r" || e.key === "к") refresh(true);
+    else if (e.key === "t" || e.key === "е") $("#btn-theme").click();
+    else if (e.key === "Escape") $("#modal").classList.remove("open");
+  });
   $$("#tabs button").forEach((b) => b.addEventListener("click", () => goTab(b.dataset.tab)));
   $$("#tabs button").forEach((x) => x.classList.toggle("active", x.dataset.tab === tab));
   $("#btn-tick").onclick = async () => { const b = $("#btn-tick"); b.disabled = true; try { await api("/api/tick", { method: "POST" }); } finally { b.disabled = false; refresh(true); } };

@@ -58,6 +58,7 @@ class Settings:
     reentry_move_pct: float = 0.5          # повторный вход в ту же сторону только когда цена ушла от точки выхода на столько %
     reentry_guard_h: int = 24              # защита от повторного входа действует столько часов после выхода
     max_entries_day: int = 4               # не больше стольких входов в день на трейдера (0 = без лимита)
+    experiments: bool = True               # экспериментальные агенты (скальпер на минутках) вне десков
     intraday_cooldown_h: int = 3           # не чаще одного внутридневного пересмотра за столько часов
     db_path: str = "data/trader.db"
     port: int = 8080
@@ -130,6 +131,7 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         reentry_move_pct=float(env.get("REENTRY_MOVE_PCT", "0.5")),
         reentry_guard_h=int(env.get("REENTRY_GUARD_H", "24")),
         max_entries_day=int(env.get("MAX_ENTRIES_DAY", "4")),
+        experiments=_bool(env.get("EXPERIMENTS"), True),
         intraday_cooldown_h=int(env.get("INTRADAY_COOLDOWN_H", "3")),
         db_path=env.get("DB_PATH", "data/trader.db"),
         port=int(env.get("PORT", "8080")),

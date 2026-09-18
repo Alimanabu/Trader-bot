@@ -150,6 +150,41 @@ def create_app(engine: Engine | None = None, start_scheduler: bool = True) -> Fa
         engine.risk.set_rules(engine.j.active_rules())
         return {"ok": True}
 
+    @app.post("/api/agents/{name}/close")
+    def close_position(name: str):
+        if not engine.manual_close(name):
+            raise HTTPException(404, "у агента нет открытой позиции")
+        return {"ok": True}
+
+    @app.post("/api/agents/{name}/pause")
+    def pause_agent(name: str):
+        if not engine.manual_pause(name):
+            raise HTTPException(404, "агент не найден")
+        return {"ok": True}
+
+    @app.post("/api/agents/{name}/resume")
+    def resume_agent(name: str):
+        if not engine.manual_pause(name, resume=True):
+            raise HTTPException(404, "агент не найден")
+        return {"ok": True}
+
+    @app.get("/api/trades.csv")
+    def trades_csv():
+        import csv
+        import io
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["time_utc", "agent", "side", "price", "qty", "fee", "pnl", "reason"])
+        from datetime import datetime, timezone
+        for t in engine.j.all_trades():
+            w.writerow([datetime.fromtimestamp(t["ts"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M"), t["agent"], t["side"], f"{t['price']:.2f}",
+                        f"{t['qty']:.6f}", f"{t['fee']:.4f}", "" if t.get("pnl") is None else f"{t['pnl']:.2f}", t.get("reason") or ""])
+        return Response(buf.getvalue(), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=botz-trades.csv"})
+
+    @app.get("/api/m1")
+    def m1(limit: int = 240):
+        return [c.__dict__ for c in engine.m1[-limit:]]
+
     @app.post("/api/research")
     def research():
         if not engine.last_candles:

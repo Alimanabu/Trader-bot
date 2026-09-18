@@ -28,7 +28,7 @@ def test_llm_strategy_holds_without_key(candles):
 
 
 def test_registry_has_all_families():
-    assert len(STRATEGY_FAMILIES) == 18
+    assert len(STRATEGY_FAMILIES) == 19
 
 
 def test_llm_budget_blocks_calls():

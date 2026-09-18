@@ -275,3 +275,44 @@ button.btn.mini { padding: 2px 8px; font-size: 11px; border-radius: 6px; margin-
 .pbody { margin-top: 4px; font-size: 12px; color: var(--muted); padding-left: 40px; }
 .pbody b { color: var(--text); font-weight: 600; }
 .pos.protected .pres b { text-shadow: 0 0 10px rgba(52,210,123,.35); }
+
+/* терминал: две колонки на широких экранах */
+.term { display: flex; flex-direction: column; }
+.term > .col-main, .term > .col-side { display: contents; }
+.term .o0 { order: 0; } .term .o1 { order: 1; } .term .o2 { order: 2; } .term .o3 { order: 3; } .term .o4 { order: 4; } .term .o5 { order: 5; }
+.term .o7 { order: 7; } .term .o8 { order: 8; } .term .o9 { order: 9; } .term .o10 { order: 10; }
+.term .card.o4, .term .card.o7, .term .card.o8, .term .card.o10 { margin-top: 12px; }
+@media (min-width: 960px) {
+  body { max-width: 1480px; padding-left: 20px; padding-right: 20px; }
+  .term { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(320px, 1fr); gap: 0 16px; align-items: start; }
+  .term > .col-main, .term > .col-side { display: block; min-width: 0; }
+  .term .col-side > :first-child .card:first-child { margin-top: 0; }
+  .chart canvas { height: 320px; }
+  .desks { grid-template-columns: 1fr; }
+  .desk { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; align-items: center; }
+  .desk .dhead, .desk .capbar, .desk .note { grid-column: 1 / -1; }
+}
+@media (min-width: 1280px) { .term { grid-template-columns: minmax(0, 1.8fr) minmax(360px, 1fr); } .chart canvas { height: 380px; } }
+.hbtns { display: flex; gap: 6px; }
+.icon-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; vertical-align: middle; }
+.icon-btn.on { color: var(--btc); border-color: var(--btc); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--muted); margin-top: 6px; align-items: center; }
+.legend i { display: inline-block; width: 16px; height: 0; border-top: 2px dashed; margin-right: 4px; vertical-align: middle; }
+.legend .lg-long { border-color: var(--up); } .legend .lg-short { border-color: var(--down); } .legend .lg-stop { border-color: var(--warn); border-top-style: dotted; }
+.legend .lg-buy { color: var(--up); } .legend .lg-sell { color: var(--down); }
+.toolbar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 6px 0 8px; }
+.toolbar select { background: var(--card2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; font-size: 12px; }
+.actions-row { display: flex; gap: 8px; flex-wrap: wrap; }
+#meta small { font-size: 10px; color: var(--muted); }
+a.btn { display: inline-block; text-decoration: none; }
+
+/* светлая тема */
+html.light {
+  --bg: #f4f6fb; --card: #ffffff; --card2: #eef1f7; --line: #dde3ee;
+  --text: #141821; --muted: #5d6579; --dim: #8a93a8;
+  --up: #1f9d5a; --down: #d9484f; --warn: #c98a1a; --btc: #e0821a; --usdt: #3b6fd6; --violet: #6f63d6; --teal: #1e8fbf; --gold: #b8901e;
+}
+html.light .tabs { background: rgba(244,246,251,.94); }
+html.light .top { background: linear-gradient(var(--bg) 80%, transparent); }
+html.light .ava { color: #fff; }
+html.light .pill.rank-1 { background: #e6e9f2; }

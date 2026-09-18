@@ -21,6 +21,8 @@ class Sided(Strategy):
         self.family = f"{base.family}_{side}"
         self.description = ("Медведь: " if side == "short" else "Двусторонний: ") + base.description
         self.params = base.params
+        self.timeframe = getattr(base, "timeframe", "1h")
+        self.high_frequency = getattr(base, "high_frequency", False)
 
     @classmethod
     def default_params(cls):

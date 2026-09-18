@@ -14,9 +14,12 @@ from ..paper import PaperAccount
 from .base import Agent, Strategy
 from .llm import LLM_STRATEGIES
 from .rules import RULE_STRATEGIES
+from .scalper import EXPERIMENT_STRATEGIES
 from .sided import SHORTABLE, Sided
 
-STRATEGY_FAMILIES: dict[str, type[Strategy]] = {s.family: s for s in RULE_STRATEGIES + LLM_STRATEGIES}
+STRATEGY_FAMILIES: dict[str, type[Strategy]] = {s.family: s for s in RULE_STRATEGIES + LLM_STRATEGIES + EXPERIMENT_STRATEGIES}
+# экспериментальные агенты: вне десков, на своём счёте, для проверки идей на живых данных
+EXPERIMENTS = {"scalper": "Скальпер"}
 # семейства фьючерсного демо-режима: <база>_short и <база>_both
 SIDED_FAMILIES: dict[str, tuple[str, str]] = {}
 for _fam in SHORTABLE:
@@ -53,7 +56,7 @@ def family_side(family: str) -> str:
 
 
 def all_families() -> list[str]:
-    return [f for f in STRATEGY_FAMILIES if not f.startswith("llm_")] + list(SIDED_FAMILIES)
+    return [f for f in STRATEGY_FAMILIES if not f.startswith("llm_") and f not in EXPERIMENTS] + list(SIDED_FAMILIES)
 
 
 # Штатные агенты по дескам (порядок важен: первые desk_size каждого деска попадают в команду при первом запуске)
@@ -95,6 +98,7 @@ FAMILY_LABELS = {
     "llm_regime": "Макро-стратег",
     "llm_news": "Новостной аналитик",
     "llm_regime_both": "Нейро-двусторонний",
+    "scalper": "Скальпер (1 мин)",
 }
 
 
