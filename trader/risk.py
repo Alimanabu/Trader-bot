@@ -35,6 +35,8 @@ RULE_TYPES = {
     "stop_mult": "стоп на расстоянии N·ATR",
     "cooldown_min": "пауза после стопа, минут",
 }
+# кроме правил из базы знаний действуют настройки: max_entries_day (входов в день), reentry_move_pct (повторный вход
+# в ту же сторону только после ухода цены от точки выхода), exit_cooldown_min (пауза после выхода в плюс/безубыток)
 
 
 class RiskManager:
@@ -115,6 +117,16 @@ class RiskManager:
                 self.rule_hits.append(rid)
                 return 0.0, f"правило: семейство {family} вне рынка в режиме «{regime}»"
         increasing = abs(target) > abs(current) + 1e-9
+        opening = increasing and abs(current) < 1e-9
+        # защита от повторного входа: после выхода из позиции та же сторона открывается только когда цена ушла
+        if opening and self.s.reentry_move_pct > 0 and ctx.get("exit_price") and ctx.get("exit_side"):
+            side = "long" if target > 0 else "short"
+            age_h = (float(ctx.get("ts", 0)) - float(ctx.get("exit_ts", 0))) / 3600
+            moved = abs(float(ctx.get("price", 0)) / float(ctx["exit_price"]) - 1) * 100
+            if side == ctx["exit_side"] and age_h < self.s.reentry_guard_h and moved < self.s.reentry_move_pct:
+                return current, f"защита от повторного входа: после выхода по {float(ctx['exit_price']):.0f} цена ушла лишь на {moved:.2f}%"
+        if opening and self.s.max_entries_day and int(ctx.get("entries_today", 0)) >= self.s.max_entries_day:
+            return current, f"лимит входов: уже {ctx.get('entries_today')} за день"
         if increasing and hour is not None:
             for rid, d in self._rule_values("no_entry_hours"):
                 if int(hour) in {int(h) for h in d.get("hours", [])} and (not d.get("desk") or d.get("desk") == agent.desk):
@@ -145,7 +157,7 @@ class RiskManager:
         if agent.status == "paused":
             return RiskVerdict(False, 0.0, "агент на паузе до конца дня")
         if rule_note:
-            return RiskVerdict(True, target, rule_note)
+            return RiskVerdict(True, target, ("правило: " if not rule_note.startswith("правило") else "") + rule_note)
         if abs(target - signal.target_exposure) > 1e-9:
             pc = self.desk_cap(agent.desk, ctx.get("regime"))
             if pc < min(1.0, self.s.agent_max_exposure) and abs(abs(target) - pc * min(1.0, abs(signal.target_exposure))) < 1e-9:

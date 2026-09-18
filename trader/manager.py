@@ -70,7 +70,7 @@ class Director:
     ALLOC = {
         "balanced": {
             "up": {"bulls": 1.0, "bears": 0.3, "both": 0.8},
-            "flat": {"bulls": 0.6, "bears": 0.6, "both": 1.0},
+            "flat": {"bulls": 0.6, "bears": 0.6, "both": 0.7},
             "down": {"bulls": 0.3, "bears": 1.0, "both": 0.8},
         },
         "defensive": {

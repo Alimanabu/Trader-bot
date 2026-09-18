@@ -99,7 +99,8 @@ class Engine:
                       week_key=r.get("week_key") or "", streak_weeks=int(r.get("streak_weeks") or 0),
                       trial_weeks=int(r.get("trial_weeks") or 0), live_ready=bool(r.get("live_ready") or 0),
                       rank=int(r.get("rank") if r.get("rank") is not None else (RANK_INTERN if r["status"] == "intern" else RANK_TRADER)),
-                      best_price=float(r.get("best_price") or 0), partial_taken=bool(r.get("partial_taken") or 0))
+                      best_price=float(r.get("best_price") or 0), partial_taken=bool(r.get("partial_taken") or 0),
+                      exit_price=float(r.get("exit_price") or 0), exit_side=r.get("exit_side") or "", exit_ts=int(r.get("exit_ts") or 0))
             a._start_balance = r["start_balance"]
             a.last_price = self.last_price
             self.agents.append(a)
@@ -171,6 +172,8 @@ class Engine:
         Уже подтянутый стоп при доборе позиции назад не опускается."""
         pos = a.account.btc
         if abs(pos) < 1e-12:
+            if trade is not None and trade.pnl is not None:
+                a.exit_price, a.exit_side, a.exit_ts = trade.price, ("long" if trade.side == "SELL" else "short"), trade.ts
             a.stop_price = 0.0
             a.best_price = 0.0
             a.partial_taken = False
@@ -300,10 +303,12 @@ class Engine:
             pos = a.account.btc
             triggered = a.stop_price and ((pos > 0 and price <= a.stop_price) or (pos < 0 and price >= a.stop_price))
             if triggered:
-                label = KIND[self.stop_kind(a)]
+                kind = self.stop_kind(a)
+                label = KIND[kind]
                 fill_px = price * (1 - self.s.stop_slippage) if pos > 0 else price * (1 + self.s.stop_slippage)
                 t = a.account.flatten(fill_px, now_i, f"{label} {a.stop_price:.0f}")
                 if t:
+                    a.exit_price, a.exit_side, a.exit_ts = t.price, ("long" if pos > 0 else "short"), now_i
                     self.j.trade(t)
                     self.j.decision(now_i, a.name, a.strategy.family, t.side, 0.0, 1.0, f"{label}: цена {price:.0f} {'ниже' if pos > 0 else 'выше'} {a.stop_price:.0f}",
                                     price, a.equity(price), True, None, trade=t, exposure_before=a.account.exposure(price))
@@ -314,7 +319,8 @@ class Engine:
                 a.partial_taken = False
                 a.stop_price = 0.0
                 a.last_target = 0.0
-                a.next_check_ts = max(a.next_check_ts, now_i + self.risk.stop_cooldown_min * 60)
+                cooldown = self.s.exit_cooldown_min if kind in {"trailing", "breakeven"} else self.risk.stop_cooldown_min
+                a.next_check_ts = max(a.next_check_ts, now_i + cooldown * 60)
         return hit
 
     def _view(self, candles: list[Candle], price: float, now_i: int) -> list[Candle]:
@@ -431,8 +437,8 @@ class Engine:
         for a in alive:
             a.account.min_rebalance_frac = float(pol.get("min_rebalance", 0.05))
         atr_pct = self._atr_pct(candles)
+        summary["liquidations"] = self._check_liquidations(alive, price, now_i)   # биржа ликвидирует раньше, чем сработает наш стоп
         summary["stops"] = self._check_stops(alive, price, now_i, atr_pct)
-        summary["liquidations"] = self._check_liquidations(alive, price, now_i)
         view = None
         for a in alive:
             due, why_due = self._is_due(a, now_i, price, force)
@@ -496,6 +502,13 @@ class Engine:
             return True
         return now_i - a.last_logged_ts >= 3600
 
+    def _risk_ctx(self, a: Agent, price: float, ts: int) -> dict:
+        day_start_ts = ts - ts % 86400
+        return {"hour": datetime.fromtimestamp(ts, tz=timezone.utc).hour, "regime": getattr(self, "regime", "flat"), "price": price, "ts": ts,
+                "trades_today": sum(1 for t in a.account.trades if t.ts >= day_start_ts),
+                "entries_today": sum(1 for t in a.account.trades if t.ts >= day_start_ts and t.pnl is None),
+                "exit_price": a.exit_price, "exit_side": a.exit_side, "exit_ts": a.exit_ts}
+
     def _intern_step(self, a: Agent, candles: list[Candle], price: float, ts: int, atr_pct: float = 0.01) -> None:
         ctx = {"exposure": a.account.exposure(price), "bars_in_position": a.bars_in_position}
         try:
@@ -509,8 +522,11 @@ class Engine:
             return
         exp_before = a.account.exposure(price)
         desired = sig.target_exposure if a.account.allow_short else max(0.0, sig.target_exposure)
-        sized = self.risk.size(desired, atr_pct)
-        t = a.account.rebalance(sized, price, ts, sig.reason)
+        sized = self.risk.size(desired, atr_pct, a.desk, getattr(self, "regime", None))
+        sized, note = self.risk.apply_rules(a, sized, {**self._risk_ctx(a, price, ts), "exposure": exp_before, "family": a.strategy.family})
+        for rid in self.risk.rule_hits:
+            self.j.knowledge_hit(rid)
+        t = a.account.rebalance(sized, price, ts, sig.reason + (f" · {note}" if note else ""))
         if t:
             self.j.trade(t)
         self._after_trade(a, t, price, atr_pct)
@@ -536,9 +552,7 @@ class Engine:
             from .agents.base import hold
             sig = hold(f"ошибка стратегии: {e}", ctx["exposure"])
         a.last_signal = sig
-        day_start_ts = ts - ts % 86400
-        rctx = {"hour": datetime.fromtimestamp(ts, tz=timezone.utc).hour, "regime": getattr(self, "regime", "flat"),
-                "trades_today": sum(1 for t in a.account.trades if t.ts >= day_start_ts)}
+        rctx = self._risk_ctx(a, price, ts)
         verdict = self.risk.check_agent(a, sig, price, atr_pct, rctx)
         for rid in self.risk.rule_hits:
             self.j.knowledge_hit(rid)

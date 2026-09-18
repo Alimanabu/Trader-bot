@@ -77,6 +77,9 @@ class Agent:
     rank: int = 1                # звание: 0 стажёр, 1 трейдер, 2 старший трейдер, 3 реальный счёт
     best_price: float = 0.0      # лучшая цена с момента входа (для подтягивающегося стопа)
     partial_taken: bool = False  # часть прибыли по этой позиции уже зафиксирована
+    exit_price: float = 0.0      # цена последнего полного выхода из позиции
+    exit_side: str = ""          # какую позицию закрыли: long | short
+    exit_ts: int = 0
 
     def start_balance(self) -> float:
         return self._start_balance

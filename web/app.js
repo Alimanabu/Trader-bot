@@ -127,7 +127,7 @@
         <label class="toggle"><input type="checkbox" id="toggle-pos-interns" ${showInternPos ? "checked" : ""}> показывать стажёров</label></div>
       <div class="note num">${list.length ? `лонгов ${longs.length} · шортов ${shorts.length} · в рынке ${fmt(inMarket, 0)} $ · на бумаге сейчас <b class="${cls(total)}">${sign(total)} $</b>${!showInternPos ? ` · вне рынка ${Math.max(0, team - list.length)} трейдеров` : ""}` : "сейчас все вне рынка: ждут сигнала"}</div>
       ${list.length ? `<ul class="plist">${list.map(positionLine).join("")}</ul>` : ""}
-      <div class="note" style="margin-top:8px">Сопровождение позиций: при прибыли в 1·ATR стоп переносится в безубыток, дальше подтягивается за лучшей ценой на 2·ATR и назад не отступает. При прибыли в 3·ATR фиксируется половина позиции, остаток идёт с подтянутым стопом.</div></div>`;
+      <div class="note" style="margin-top:8px">Сопровождение позиций: при прибыли в 1·ATR стоп переносится в безубыток, дальше подтягивается за лучшей ценой на 2·ATR и назад не отступает. При прибыли в 3·ATR фиксируется половина позиции, остаток идёт с подтянутым стопом. После выхода в плюс пауза 2 часа, повторный вход в ту же сторону только после ухода цены на 0,5%, не больше 4 входов в день.</div></div>`;
   }
 
   function allocHTML(s) {

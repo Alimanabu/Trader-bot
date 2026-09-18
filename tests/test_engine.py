@@ -694,3 +694,70 @@ def test_position_without_stop_gets_one_and_closes_if_breached(settings):
     res = eng.tick(now=T + 60)
     assert bear.name in res["stops"] and abs(bear.account.btc) < 1e-9
     assert any("не было стопа" in e["message"] for e in eng.j.recent_events(20))
+
+
+def test_reentry_guard_and_entry_limit(settings):
+    from trader.models import Action, Signal
+    settings.intern_count = 0
+    settings.slippage_rate = 0.0
+    settings.stop_slippage = 0.0
+    settings.max_entries_day = 2
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    for a in eng.agents:
+        a.account.flatten(eng.last_price, T, "тест")
+        a.next_check_ts = T + 10 * 86400
+    bull = next(a for a in eng.agents if a.desk == "bulls")
+    bull.account.trades = []
+    want = {"v": 1.0}
+    bull.strategy.decide = lambda candles, ctx=None: Signal(Action.BUY if want["v"] > 0 else Action.SELL, want["v"], 1.0, "тест")
+    eng._atr_pct = lambda candles: 0.01
+    eng.market.price = lambda symbol: 100.0
+    bull.next_check_ts = 0
+    eng.tick(now=T + 60)                         # вход 1
+    assert bull.account.btc > 0
+    want["v"] = 0.0; bull.next_check_ts = 0
+    eng.tick(now=T + 120)                        # выход по сигналу на той же цене
+    assert abs(bull.account.btc) < 1e-9 and bull.exit_side == "long" and bull.exit_price > 0
+    want["v"] = 1.0; bull.next_check_ts = 0
+    eng.tick(now=T + 180)                        # цена не ушла на 0.5% → повторный вход запрещён
+    assert abs(bull.account.btc) < 1e-9
+    assert any("повторного входа" in d["reason"] for d in eng.j.recent_decisions(bull.name, 5))
+    eng.market.price = lambda symbol: 100.6      # цена ушла → можно
+    bull.next_check_ts = 0
+    eng.tick(now=T + 240)
+    assert bull.account.btc > 0
+    want["v"] = 0.0; bull.next_check_ts = 0
+    eng.tick(now=T + 300)
+    eng.market.price = lambda symbol: 101.5
+    want["v"] = 1.0; bull.next_check_ts = 0
+    eng.tick(now=T + 360)                        # третий вход за день: лимит 2
+    assert abs(bull.account.btc) < 1e-9
+    assert any("лимит входов" in d["reason"] for d in eng.j.recent_decisions(bull.name, 5))
+
+
+def test_breakeven_exit_uses_long_cooldown(settings):
+    settings.intern_count = 0
+    settings.slippage_rate = 0.0
+    settings.stop_slippage = 0.0
+    settings.exit_cooldown_min = 120
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    for a in eng.agents:
+        a.account.flatten(eng.last_price, T, "тест")
+        a.next_check_ts = T + 10 * 86400
+    bull = next(a for a in eng.agents if a.desk == "bulls")
+    t = bull.account.rebalance(1.0, 100.0, T, "тест")
+    eng._after_trade(bull, t, 100.0, 0.01)
+    eng._atr_pct = lambda candles: 0.01
+    eng.market.price = lambda symbol: 101.5
+    eng.tick(now=T + 60)                         # безубыток
+    assert eng.stop_kind(bull) == "breakeven"
+    eng.market.price = lambda symbol: 100.0
+    bull.next_check_ts = 0
+    res = eng.tick(now=T + 120)
+    assert bull.name in res["stops"] and bull.next_check_ts >= T + 120 + 120 * 60
