@@ -39,12 +39,23 @@ if [ ! -f .env ]; then
   echo "==> Настройки сохранены в $DIR/.env"
 fi
 
+IP=$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')
+# HTTPS без своего домена: адрес вида 2-28-234-131.nip.io указывает на этот же IP, сертификат выдаётся автоматически
+if ! grep -qE '^DOMAIN=.+' .env; then
+  DOMAIN="$(echo "$IP" | tr . -).nip.io"
+  sed -i '/^DOMAIN=$/d;/^ACME_EMAIL=$/d' .env
+  printf '\n# Домен для HTTPS (Caddy получит сертификат сам). Свой домен: впишите его и направьте A-запись на сервер\nDOMAIN=%s\nACME_EMAIL=botz@%s\n' "$DOMAIN" "$DOMAIN" >> .env
+  echo "==> HTTPS-адрес: https://${DOMAIN}"
+fi
+DOMAIN=$(grep -E '^DOMAIN=.+' .env | tail -1 | cut -d= -f2-)
+
 mkdir -p data
 echo "==> Собираю и запускаю (первый раз 2-3 минуты)"
 docker compose up -d --build
 
-IP=$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')
 echo
-echo "Готово. Панель: http://${IP}:8080  (логин любой, пароль тот, что вы придумали)"
+echo "Готово. Панель: https://${DOMAIN}  (логин любой, пароль тот, что вы придумали)"
+echo "Запасной адрес без шифрования: http://${IP}:8080"
+echo "Если https не открывается: в облачном файрволе сервера должны быть открыты порты 80 и 443."
 echo "Логи:          cd $DIR && docker compose logs -f"
 echo "Обновить код:  bash $DIR/deploy.sh"

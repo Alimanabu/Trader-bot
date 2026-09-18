@@ -7,3 +7,24 @@ services:
     env_file: .env
     volumes:
       - ./data:/app/data
+
+  # HTTPS: Caddy сам получает и продлевает сертификат для домена DOMAIN (задаётся в .env)
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+      - ACME_EMAIL=${ACME_EMAIL:-botz@example.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - trader
+
+volumes:
+  caddy_data:
+  caddy_config:
