@@ -736,10 +736,50 @@ class Director:
                     res["dropped"].append(a.name)
             else:
                 a.streak_weeks = 0
+        res["capital"] = self.scale_capital(agents, price, ts)
         self.j.event("weekly", f"Недельная ротация: в стажёры {len(res['demoted'])}, в трейдеры {len(res['promoted'])}, "
                                f"старших трейдеров +{len(res['senior'])}, отчислено {len(res['dropped'])}, "
                                f"кандидатов на реальный счёт {len(res['live_ready'])}", None, res, ts=ts)
         return res
+
+    def scale_capital(self, agents: list[Agent], price: float, ts: int) -> list[dict]:
+        """Капитал идёт к тем, кто зарабатывает. Раз в неделю, после оценки серий.
+
+        Множитель по серии недель в плюсе: 3+ → 2.0, 2 → 1.5, 1 → 1.2, ноль → 0.85 (минус неделя → 0.7).
+        Общий капитал команды не меняется: цели нормируются, слабые финансируют сильных.
+        Границы capital_min_mult … capital_max_mult от стартового счёта.
+        """
+        if not self.s.capital_scaling:
+            return []
+        team = [a for a in agents if is_team(a) and a.week_start_equity > 0 and self._days(a) >= 7]
+        if len(team) < 3:
+            return []
+        base = self.s.agent_start_balance
+        total = sum(a.equity(price) for a in team)
+        want: dict[str, float] = {}
+        for a in team:
+            streak = a.streak_weeks
+            mult = 2.0 if streak >= 3 else 1.5 if streak >= 2 else 1.2 if streak >= 1 else (0.7 if a.pnl_week_pct(price) < 0 else 0.85)
+            want[a.name] = max(self.s.capital_min_mult, min(self.s.capital_max_mult, mult)) * base
+        factor = total / sum(want.values()) if want else 1.0
+        changes = []
+        for a in team:
+            target = max(self.s.capital_min_mult * base, min(self.s.capital_max_mult * base, want[a.name] * factor))
+            delta = target - a.equity(price)
+            if abs(delta) < 0.05 * base:
+                continue
+            a.adjust_capital(delta)
+            self.j.save_agent(a)
+            changes.append({"agent": a.name, "from": round(target - delta, 2), "to": round(target, 2), "streak": a.streak_weeks})
+            self.j.event("capital", f"{a.name}: капитал {target - delta:.0f} → {target:.0f} $ "
+                                    f"({a.streak_weeks} нед. в плюсе подряд)" if delta > 0 else
+                                    f"{a.name}: капитал {target - delta:.0f} → {target:.0f} $ (слабая неделя, деньги ушли к прибыльным)",
+                         a.name, {"delta": round(delta, 2)}, ts=ts)
+        if changes:
+            up = [c for c in changes if c["to"] > c["from"]]
+            self.j.event("capital", f"Перераспределение капитала: {len(up)} трейдеров получили больше, {len(changes) - len(up)} меньше; "
+                                    f"общий капитал команды без изменений ({total:.0f} $)", None, {"changes": changes}, ts=ts)
+        return changes
 
     def approve_rule(self, details: dict, ts: int) -> int:
         data = details.get("rule") or {}

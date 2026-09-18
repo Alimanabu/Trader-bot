@@ -181,6 +181,83 @@ def create_app(engine: Engine | None = None, start_scheduler: bool = True) -> Fa
                         f"{t['qty']:.6f}", f"{t['fee']:.4f}", "" if t.get("pnl") is None else f"{t['pnl']:.2f}", t.get("reason") or ""])
         return Response(buf.getvalue(), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=botz-trades.csv"})
 
+    @app.get("/api/push/key")
+    def push_key():
+        if not engine.push:
+            raise HTTPException(503, "push недоступен")
+        return {"key": engine.push.keys.public_b64u()}
+
+    @app.post("/api/push/subscribe")
+    async def push_subscribe(request: Request):
+        body = await request.json()
+        sub = body.get("subscription") or body
+        if not sub.get("endpoint") or not (sub.get("keys") or {}).get("p256dh"):
+            raise HTTPException(400, "нет подписки")
+        engine.j.push_add(sub, str(body.get("label") or "")[:60])
+        return {"ok": True, "subscribers": len(engine.j.push_subs())}
+
+    @app.post("/api/push/unsubscribe")
+    async def push_unsubscribe(request: Request):
+        body = await request.json()
+        engine.j.push_remove(body.get("endpoint", ""))
+        return {"ok": True}
+
+    @app.post("/api/push/test")
+    def push_test():
+        return {"sent": engine.push_test()}
+
+    @app.get("/api/alerts")
+    def alerts_list():
+        return {"alerts": engine.j.alerts(), "kinds": engine.ALERT_KINDS}
+
+    @app.post("/api/alerts")
+    async def alerts_add(request: Request):
+        body = await request.json()
+        kind = body.get("kind")
+        if kind not in engine.ALERT_KINDS:
+            raise HTTPException(400, "неизвестный вид сигнала")
+        aid = engine.j.alert_add(kind, float(body.get("value") or 0), str(body.get("target") or ""), bool(body.get("repeat")),
+                                 ts=engine.last_poll_ts or None)
+        return {"ok": True, "id": aid}
+
+    @app.delete("/api/alerts/{aid}")
+    def alerts_delete(aid: int):
+        engine.j.alert_delete(aid)
+        return {"ok": True}
+
+    @app.post("/api/briefing")
+    def briefing_now():
+        return engine.morning_briefing(int(__import__("time").time()))
+
+    @app.post("/api/lab/backtest")
+    async def lab_backtest(request: Request):
+        body = await request.json()
+        from .agents.registry import STRATEGY_FAMILIES, SIDED_FAMILIES
+        fam = body.get("family")
+        if fam not in STRATEGY_FAMILIES and fam not in SIDED_FAMILIES:
+            raise HTTPException(400, "неизвестное семейство")
+        params = body.get("params") or None
+        try:
+            return engine.lab_backtest(fam, params, int(body.get("days") or 30))
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(400, f"не удалось прогнать: {e}")
+
+    @app.get("/api/live")
+    def live():
+        return engine.live_state()
+
+    @app.get("/api/at")
+    def at(ts: int):
+        return engine.snapshot_at(int(ts))
+
+    @app.get("/api/correlation")
+    def correlation(days: int = 7):
+        return engine.correlation(days)
+
+    @app.get("/api/stress")
+    def stress():
+        return engine.stress_test()
+
     @app.get("/api/m1")
     def m1(limit: int = 240):
         return [c.__dict__ for c in engine.m1[-limit:]]

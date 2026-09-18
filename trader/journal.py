@@ -75,6 +75,19 @@ CREATE TABLE IF NOT EXISTS knowledge (
     data TEXT NOT NULL DEFAULT '{}', uses INTEGER NOT NULL DEFAULT 0, updated_ts INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_kind ON knowledge(kind, status);
+CREATE TABLE IF NOT EXISTS push_subs (
+    endpoint TEXT PRIMARY KEY, sub TEXT NOT NULL, ts INTEGER NOT NULL, label TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL, kind TEXT NOT NULL, value REAL NOT NULL DEFAULT 0, target TEXT NOT NULL DEFAULT '',
+    repeat INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, fired_ts INTEGER NOT NULL DEFAULT 0, fired_n INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS live_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL, agent TEXT NOT NULL, side TEXT NOT NULL, qty REAL NOT NULL, quote REAL NOT NULL, price REAL NOT NULL,
+    status TEXT NOT NULL, order_id TEXT, testnet INTEGER NOT NULL DEFAULT 1, error TEXT
+);
 CREATE TABLE IF NOT EXISTS regime_memory (
     scope TEXT NOT NULL, key TEXT NOT NULL, regime TEXT NOT NULL,
     days INTEGER NOT NULL DEFAULT 0, pct_sum REAL NOT NULL DEFAULT 0, wins INTEGER NOT NULL DEFAULT 0,
@@ -293,6 +306,90 @@ class Journal:
             "best": {"agent": best["agent"], "pnl": best["pnl"], "ts": best["ts"]} if best else None,
             "worst": {"agent": worst["agent"], "pnl": worst["pnl"], "ts": worst["ts"]} if worst else None,
         }
+
+    def heatmap(self, names: set[str], since_ts: int = 0) -> dict:
+        """Итог закрытых сделок по часам суток (UTC) и дням недели."""
+        if not names:
+            return {"hours": [], "weekdays": [], "closed": 0}
+        marks = ",".join("?" * len(names))
+        rows = self._rows(f"SELECT ts, pnl FROM trades WHERE pnl IS NOT NULL AND ts>=? AND agent IN ({marks})", (since_ts, *names))
+        hours = [{"pnl": 0.0, "n": 0, "wins": 0} for _ in range(24)]
+        wd = [{"pnl": 0.0, "n": 0, "wins": 0} for _ in range(7)]
+        from datetime import datetime, timezone
+        for r in rows:
+            d = datetime.fromtimestamp(r["ts"], tz=timezone.utc)
+            for cell in (hours[d.hour], wd[d.weekday()]):
+                cell["pnl"] += r["pnl"]; cell["n"] += 1; cell["wins"] += 1 if r["pnl"] > 0 else 0
+        for c in hours + wd:
+            c["pnl"] = round(c["pnl"], 2)
+        return {"hours": hours, "weekdays": wd, "closed": len(rows)}
+
+    def hourly_pnl_series(self, names: set[str], since_ts: int) -> dict[str, dict[int, float]]:
+        """Часовые приращения капитала каждого агента (для матрицы похожести)."""
+        if not names:
+            return {}
+        marks = ",".join("?" * len(names))
+        rows = self._rows(f"SELECT agent, ts, equity FROM equity WHERE ts>=? AND agent IN ({marks}) ORDER BY agent, ts", (since_ts, *names))
+        last_by_agent: dict[str, dict[int, float]] = {}
+        for r in rows:
+            last_by_agent.setdefault(r["agent"], {})[r["ts"] // 3600 * 3600] = r["equity"]
+        out: dict[str, dict[int, float]] = {}
+        for agent, series in last_by_agent.items():
+            hs = sorted(series)
+            out[agent] = {hs[i]: series[hs[i]] - series[hs[i - 1]] for i in range(1, len(hs))}
+        return out
+
+    def trades_until(self, names: set[str], ts: int) -> dict[str, list[dict]]:
+        if not names:
+            return {}
+        marks = ",".join("?" * len(names))
+        rows = self._rows(f"SELECT agent, ts, side, price, qty, fee, pnl, reason FROM trades WHERE ts<=? AND agent IN ({marks}) ORDER BY id", (ts, *names))
+        out: dict[str, list[dict]] = {}
+        for r in rows:
+            out.setdefault(r["agent"], []).append(r)
+        return out
+
+    def decisions_around(self, ts: int, window: int = 3600, limit: int = 60) -> list[dict]:
+        return self._rows("SELECT * FROM decisions WHERE ts<=? AND ts>? ORDER BY ts DESC LIMIT ?", (ts, ts - window, limit))
+
+    def events_before(self, kind: str, ts: int, limit: int = 1) -> list[dict]:
+        return self._rows("SELECT * FROM events WHERE kind=? AND ts<=? ORDER BY ts DESC LIMIT ?", (kind, ts, limit))
+
+    def views_before(self, ts: int) -> list[dict]:
+        return self._rows("SELECT v.* FROM views v JOIN (SELECT analyst, MAX(id) AS id FROM views WHERE ts<=? GROUP BY analyst) m ON v.id=m.id", (ts,))
+
+    # --- push-подписки ---
+    def push_add(self, sub: dict, label: str = "") -> None:
+        self._exec("INSERT INTO push_subs(endpoint,sub,ts,label) VALUES(?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET sub=excluded.sub, ts=excluded.ts, label=excluded.label",
+                   (sub["endpoint"], json.dumps(sub), int(time.time()), label))
+
+    def push_remove(self, endpoint: str) -> None:
+        self._exec("DELETE FROM push_subs WHERE endpoint=?", (endpoint,))
+
+    def push_subs(self) -> list[dict]:
+        return [{"endpoint": r["endpoint"], "sub": json.loads(r["sub"]), "ts": r["ts"], "label": r["label"]} for r in self._rows("SELECT * FROM push_subs")]
+
+    # --- сигналы владельца ---
+    def alert_add(self, kind: str, value: float, target: str = "", repeat: bool = False, ts: int | None = None) -> int:
+        cur = self._exec("INSERT INTO alerts(ts,kind,value,target,repeat) VALUES(?,?,?,?,?)", (ts or int(time.time()), kind, value, target, int(repeat)))
+        return cur.lastrowid
+
+    def alerts(self, active_only: bool = False) -> list[dict]:
+        return self._rows("SELECT * FROM alerts" + (" WHERE active=1" if active_only else "") + " ORDER BY id DESC")
+
+    def alert_fired(self, aid: int, ts: int, keep: bool) -> None:
+        self._exec("UPDATE alerts SET fired_ts=?, fired_n=fired_n+1, active=? WHERE id=?", (ts, 1 if keep else 0, aid))
+
+    def alert_delete(self, aid: int) -> None:
+        self._exec("DELETE FROM alerts WHERE id=?", (aid,))
+
+    # --- реальные ордера ---
+    def live_order(self, ts: int, agent: str, side: str, qty: float, quote: float, price: float, status: str, order_id, testnet: bool, error: str | None = None) -> None:
+        self._exec("INSERT INTO live_orders(ts,agent,side,qty,quote,price,status,order_id,testnet,error) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   (ts, agent, side, qty, quote, price, status, str(order_id) if order_id is not None else None, int(testnet), error))
+
+    def live_orders(self, limit: int = 30) -> list[dict]:
+        return self._rows("SELECT * FROM live_orders ORDER BY id DESC LIMIT ?", (limit,))
 
     def all_trades(self) -> list[dict]:
         return self._rows("SELECT * FROM trades ORDER BY id")

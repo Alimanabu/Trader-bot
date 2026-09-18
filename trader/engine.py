@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -17,7 +18,10 @@ from .agents.base import Agent
 from .agents.registry import (DESKS, EXPERIMENTS, RANK_INTERN, RANK_TRADER, DEFAULT_NAMES, build_strategy, default_department,
                               default_families, desk_of, family_label, family_side, new_account)
 from .analytics import AnalyticsDept
+from .broker import BinanceSpotBroker, BrokerError
 from .data import indicators as ind
+from .data.macro import describe as macro_describe, fetch_macro
+from .push import PushSender, VapidKeys
 from .config import Settings
 from .data.market import MarketData, get_market
 from .journal import Journal
@@ -64,6 +68,18 @@ class Engine:
         self.m1: list[Candle] = [Candle(*row) if len(row) == 6 else Candle(row[0], row[1], row[2], row[3], row[4], 0.0)
                                  for row in (self.j.kv_get("m1", []) or [])]
         self._m1_seed_try: int = 0
+        self._macro_try: int = 0
+        self.push: PushSender | None = None
+        try:
+            pem = self.j.kv_get("vapid_private_pem")
+            keys = VapidKeys(pem) if pem else VapidKeys.generate()
+            if not pem:
+                self.j.kv_set("vapid_private_pem", keys.private_pem)
+            self.push = PushSender(keys, settings.push_subject)
+        except Exception as e:  # noqa: BLE001
+            log.warning("push-уведомления недоступны: %s", e)
+        self.broker = BinanceSpotBroker(settings.live_api_key, settings.live_api_secret, settings.live_testnet) if settings.live_enabled else None
+        self.live_pos: dict[str, float] = self.j.kv_get("live_pos", {}) or {}
         self._load()
         n = self.j.repair_short_pnl()
         if n:
@@ -348,6 +364,7 @@ class Engine:
                 t = a.account.flatten(fill_px, now_i, f"{label} {a.stop_price:.0f}")
                 if t:
                     a.exit_price, a.exit_side, a.exit_ts = t.price, ("long" if pos > 0 else "short"), now_i
+                    self._mirror_live(a, t, price, now_i)
                     self.j.trade(t)
                     self.j.decision(now_i, a.name, a.strategy.family, t.side, 0.0, 1.0, f"{label}: цена {price:.0f} {'ниже' if pos > 0 else 'выше'} {a.stop_price:.0f}",
                                     price, a.equity(price), True, None, trade=t, exposure_before=a.account.exposure(price))
@@ -534,9 +551,18 @@ class Engine:
         self.agents.extend(new_interns)
         summary["hired"] = [h.name for h in hired]
         summary["interns_added"] = [h.name for h in new_interns]
-        if not new_candle and not summary["decisions"] and view is None and not hired and not new_interns:
+        self._refresh_macro(now_i)
+        summary["alerts"] = self._check_alerts(price, now_i)
+        if datetime.fromtimestamp(now_i, tz=timezone.utc).hour >= self.s.briefing_hour_utc and self.j.kv_get("briefing_day") != dk:
+            self.j.kv_set("briefing_day", dk)
+            try:
+                self.morning_briefing(now_i)
+            except Exception as e:  # noqa: BLE001
+                log.exception("брифинг: %s", e)
+        if not new_candle and not summary["decisions"] and view is None and not hired and not new_interns and not summary["alerts"]:
             summary["skipped"] = True
         self.save()
+        self._push_new_events(now_i)
         return summary
 
     def _should_log(self, a: Agent, sig, trade, now_i: int) -> bool:
@@ -625,6 +651,7 @@ class Engine:
             trade = a.account.rebalance(verdict.target_exposure, price, ts, sig.reason)
             if trade:
                 self.j.trade(trade)
+                self._mirror_live(a, trade, price, ts)
             self._after_trade(a, trade, price, atr_pct)
             executed = True
         else:
@@ -763,6 +790,14 @@ class Engine:
                 "events": self.j.events_of(("lesson", "retune"), 12),
             },
             "knowledge": self.knowledge_state(),
+            "stress": self.stress_test(),
+            "macro": self.macro(),
+            "alerts": self.j.alerts(),
+            "alert_kinds": self.ALERT_KINDS,
+            "briefing": (self.j.knowledge("briefing", "active", limit=1) or [None])[0],
+            "push": {"enabled": bool(self.push), "subscribers": len(self.j.push_subs())},
+            "live": self.live_state(),
+            "heatmap": {"7d": self.j.heatmap(team_names, now_i - 7 * 86400), "all": self.j.heatmap(team_names, 0)},
         }
 
     def _save_policy_via_director(self, pol: dict) -> None:
@@ -781,6 +816,307 @@ class Engine:
                         "regime": self.director.regime_for_day(day), "pnl": float(t["pnl"]), "reason": t.get("reason") or ""})
         out.sort(key=lambda x: x["pnl"])
         return out[:limit]
+
+    # --- внешние данные ---
+    def _refresh_macro(self, now_i: int) -> None:
+        if now_i - self._macro_try < 3600 or getattr(self.market, "name", "") == "synthetic":
+            return
+        self._macro_try = now_i
+        try:
+            m = fetch_macro(self.s.symbol)
+            if len(m) > 1:
+                self.j.kv_set("macro", m)
+        except Exception as e:  # noqa: BLE001
+            log.warning("внешние данные: %s", e)
+
+    def macro(self) -> dict | None:
+        return self.j.kv_get("macro", None)
+
+    # --- сигналы владельца ---
+    ALERT_KINDS = {
+        "price_above": "цена выше", "price_below": "цена ниже",
+        "company_day_below": "компания за день хуже, %", "company_day_above": "компания за день лучше, %",
+        "desk_day_below": "деск за день хуже, %", "agent_day_below": "трейдер за день хуже, %",
+        "agent_entry": "трейдер открыл позицию", "agent_exit": "трейдер закрыл позицию",
+    }
+
+    def _check_alerts(self, price: float, now_i: int) -> list[dict]:
+        fired = []
+        alerts = self.j.alerts(active_only=True)
+        if not alerts:
+            return fired
+        team = [a for a in self.agents if is_team(a)]
+        by_name = {a.name: a for a in self.agents}
+        start = sum(a.day_start_equity for a in team) or 1.0
+        company_pct = (sum(a.equity(price) for a in team) - start) / start * 100
+        for al in alerts:
+            k, v, t = al["kind"], float(al["value"]), al["target"]
+            hit, text = False, ""
+            if k == "price_above" and price >= v:
+                hit, text = True, f"цена {price:.0f} $ выше {v:.0f} $"
+            elif k == "price_below" and price <= v:
+                hit, text = True, f"цена {price:.0f} $ ниже {v:.0f} $"
+            elif k == "company_day_below" and company_pct <= -abs(v):
+                hit, text = True, f"компания за день {company_pct:+.2f}%"
+            elif k == "company_day_above" and company_pct >= abs(v):
+                hit, text = True, f"компания за день {company_pct:+.2f}%"
+            elif k == "desk_day_below":
+                members = [a for a in team if a.desk == t]
+                ds = sum(a.day_start_equity for a in members) or 1.0
+                pct = (sum(a.equity(price) for a in members) - ds) / ds * 100
+                if members and pct <= -abs(v):
+                    hit, text = True, f"деск «{DESKS.get(t, {}).get('label', t)}» за день {pct:+.2f}%"
+            elif k in {"agent_day_below", "agent_entry", "agent_exit"}:
+                a = by_name.get(t)
+                if a is not None:
+                    if k == "agent_day_below" and a.day_start_equity > 0 and a.pnl_day(price) / a.day_start_equity * 100 <= -abs(v):
+                        hit, text = True, f"{a.name} за день {a.pnl_day(price) / a.day_start_equity * 100:+.2f}%"
+                    elif k == "agent_entry" and a.account.trades and a.account.trades[-1].ts > al["fired_ts"] and a.account.trades[-1].ts >= al["ts"] and a.account.trades[-1].pnl is None:
+                        hit, text = True, f"{a.name} открыл позицию по {a.account.trades[-1].price:.0f} $"
+                    elif k == "agent_exit" and a.account.trades and a.account.trades[-1].ts > al["fired_ts"] and a.account.trades[-1].ts >= al["ts"] and a.account.trades[-1].pnl is not None:
+                        hit, text = True, f"{a.name} закрыл позицию, итог {a.account.trades[-1].pnl:+.2f} $"
+            if hit:
+                if al["repeat"] and now_i - al["fired_ts"] < 3600:
+                    continue
+                self.j.alert_fired(al["id"], now_i, keep=bool(al["repeat"]))
+                self.j.event("alert", f"Сигнал: {text}", t or None, {"alert_id": al["id"], "kind": k}, ts=now_i)
+                fired.append({"id": al["id"], "text": text})
+        return fired
+
+    # --- утренний брифинг ---
+    def morning_briefing(self, now_i: int) -> dict | None:
+        price = self.last_price
+        team = [a for a in self.agents if is_team(a)]
+        day_events = [e for e in self.j.recent_events(120) if e["ts"] >= now_i - 86400 and e["kind"] in {"stop", "fire", "hire", "demote", "head", "halt", "liquidation", "weekly", "capital", "rule", "owner"}]
+        pos = self.open_positions(now_i)
+        st = self.j.trade_stats({a.name for a in team}, now_i - 86400)
+        pol = self.director.policy()
+        facts = (f"Цена BTC {price:.0f} $. Капитал компании {sum(a.equity(price) for a in team):.0f} $. За сутки закрыто {st['closed']} сделок, "
+                 f"в плюсе {st['wins']}, итог {st['pnl']:+.2f} $, комиссии {st['fees']:.2f} $. Открытых позиций {len([p for p in pos if p['kind'] == 'team'])}, "
+                 f"на бумаге {sum(p['upnl'] for p in pos if p['kind'] == 'team'):+.2f} $. Режим рынка: {pol.get('regime')} ({pol.get('source', '')}), "
+                 f"потолки {pol.get('caps')}. Внешние данные: {macro_describe(self.macro())}.\n"
+                 + "Аналитики: " + "; ".join(f"{a['name']}: {a['last']['regime']} ({a['last']['confidence']:.0%})" for a in self.analytics.stats() if a.get("last")) + "\n"
+                 + "События за сутки:\n" + "\n".join(f"- {e['message'][:160]}" for e in day_events[:25]))
+        text = None
+        if self.client and self.client.enabled:
+            try:
+                data = self.client.structured(
+                    "Ты директор торговой компании Botz. Напиши владельцу утренний брифинг из трёх коротких абзацев на русском: "
+                    "1) что произошло за ночь и сутки (с цифрами), 2) что делает компания сейчас и почему, 3) на что смотреть сегодня и какие риски. "
+                    "Без воды, без общих слов, только факты из сводки и выводы из них.",
+                    facts, {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"], "additionalProperties": False},
+                    max_tokens=1500, strong=True)
+                text = str(data["text"]).strip()
+            except Exception as e:  # noqa: BLE001
+                log.warning("брифинг без нейросети: %s", e)
+        if not text:
+            text = (f"За сутки закрыто {st['closed']} сделок, в плюсе {st['wins']}, итог {st['pnl']:+.2f} $ при комиссиях {st['fees']:.2f} $. "
+                    f"Сейчас открыто {len([p for p in pos if p['kind'] == 'team'])} позиций, на бумаге {sum(p['upnl'] for p in pos if p['kind'] == 'team'):+.2f} $. "
+                    f"Режим рынка: {pol.get('regime')}, потолки: " + ", ".join(f"{DESKS[k]['label'].lower()} {v:.0%}" for k, v in (pol.get('caps') or {}).items()) + ". "
+                    + (f"Внешние данные: {macro_describe(self.macro())}. " if self.macro() else "")
+                    + (f"Главные события: " + "; ".join(e["message"][:80] for e in day_events[:3]) + "." if day_events else ""))
+        kid = self.j.add_knowledge(now_i, "briefing", day_key_of(now_i), text, "директор")
+        self.j.event("briefing", text[:300] + ("…" if len(text) > 300 else ""), None, {"id": kid}, ts=now_i)
+        return {"id": kid, "text": text}
+
+    # --- push-уведомления ---
+    PUSH_KINDS = {"stop": "Стоп", "approval": "Решение", "head": "Директор", "fire": "Увольнение", "halt": "Стоп компании",
+                  "liquidation": "Ликвидация", "live_ready": "Кандидат на реальный счёт", "weekly": "Недельная ротация",
+                  "alert": "Сигнал", "briefing": "Утренний брифинг", "capital": "Капитал", "rule": "Правило", "owner": "Владелец", "live": "Реальный счёт"}
+
+    def _push_new_events(self, now_i: int) -> None:
+        if not self.push:
+            return
+        subs = self.j.push_subs()
+        if not subs:
+            return
+        last_id = int(self.j.kv_get("push_last_event_id", 0) or 0)
+        events = [e for e in self.j.recent_events(40) if e["id"] > last_id]
+        if not events:
+            return
+        new_max = max(e["id"] for e in events)
+        if last_id == 0:
+            self.j.kv_set("push_last_event_id", new_max)
+            return
+        self.j.kv_set("push_last_event_id", new_max)
+        picked = [e for e in reversed(events) if e["kind"] in self.PUSH_KINDS and not (e["kind"] == "stop" and "зафиксировал" in e["message"])]
+        if not picked:
+            return
+        pending = [p["title"] for p in self.j.pending_approvals()]
+        payloads = [{"title": f"Botz · {self.PUSH_KINDS[e['kind']]}", "body": e["message"][:180], "tag": f"botz-{e['id']}", "url": "/"} for e in picked[-4:]]
+        if pending and any(e["kind"] in {"live_ready", "weekly", "rule", "strategist", "head"} for e in picked):
+            payloads.append({"title": "Botz · нужно ваше решение", "body": pending[0][:180], "tag": "botz-approval", "url": "/#company"})
+        threading.Thread(target=self._send_push, args=(subs, payloads), daemon=True).start()
+
+    def _send_push(self, subs: list[dict], payloads: list[dict]) -> None:
+        for sub in subs:
+            for p in payloads:
+                try:
+                    code = self.push.send(sub["sub"], p)
+                    if code in (404, 410):
+                        self.j.push_remove(sub["endpoint"])
+                        break
+                except Exception as e:  # noqa: BLE001
+                    log.warning("push не отправлен: %s", e)
+                    break
+
+    def push_test(self) -> int:
+        subs = self.j.push_subs()
+        if not self.push or not subs:
+            return 0
+        n = 0
+        for sub in subs:
+            try:
+                if self.push.send(sub["sub"], {"title": "Botz", "body": "Уведомления включены. Так будут приходить стопы, решения и брифинг.", "tag": "botz-test", "url": "/"}) < 400:
+                    n += 1
+            except Exception as e:  # noqa: BLE001
+                log.warning("push-тест: %s", e)
+        return n
+
+    # --- зеркало реального счёта ---
+    def _mirror_live(self, a: Agent, trade, price: float, ts: int) -> None:
+        """Сделка трейдера со званием «Реальный счёт» повторяется на бирже пропорционально live_capital_usd."""
+        if not self.broker or not self.broker.enabled or trade is None or a.rank != 3:
+            return
+        if a.strategy.side != "long":
+            return                                   # шорты на споте не зеркалятся
+        eq = a.equity(price) or 1.0
+        frac = trade.qty * trade.price / eq
+        try:
+            if trade.side == "BUY":
+                usd = round(frac * self.s.live_capital_usd, 2)
+                if usd < 10:
+                    return
+                r = self.broker.market_buy(self.s.symbol, usd)
+                self.live_pos[a.name] = self.live_pos.get(a.name, 0.0) + r["qty"]
+            else:
+                held = self.live_pos.get(a.name, 0.0)
+                qty = min(held, held * (trade.qty / max(trade.qty + a.account.btc, 1e-12)) if a.account.btc > 1e-12 else held)
+                qty = round(qty, 5)
+                if qty * price < 10:
+                    return
+                r = self.broker.market_sell(self.s.symbol, qty)
+                self.live_pos[a.name] = max(0.0, held - r["qty"])
+            self.j.kv_set("live_pos", self.live_pos)
+            self.j.live_order(ts, a.name, r["side"], r["qty"], r["quote"], r["price"], r["status"], r["order_id"], self.broker.testnet)
+            self.j.event("live", f"{a.name}: {'куплено' if r['side'] == 'BUY' else 'продано'} {r['qty']:.5f} BTC на {r['quote']:.2f} $ "
+                                 f"({'тестовая сеть' if self.broker.testnet else 'реальный счёт'})", a.name, r, ts=ts)
+        except BrokerError as e:
+            self.j.live_order(ts, a.name, trade.side, 0.0, 0.0, 0.0, "error", None, self.broker.testnet, str(e))
+            self.j.event("error", f"{a.name}: ордер на бирже не прошёл: {e}", a.name, ts=ts)
+
+    def live_state(self) -> dict:
+        out = {"enabled": bool(self.broker and self.broker.enabled), "testnet": bool(self.broker.testnet) if self.broker else True,
+               "capital_usd": self.s.live_capital_usd, "positions": self.live_pos, "orders": self.j.live_orders(15),
+               "agents": [a.name for a in self.agents if a.rank == 3 and is_team(a)]}
+        return out
+
+    # --- лаборатория ---
+    def lab_backtest(self, family: str, params: dict | None, days: int = 30) -> dict:
+        from .research import BacktestResult, backtest, result_to_dict
+        candles = self.last_candles or self.market.candles(self.s.symbol, self.s.timeframe, self.s.history_candles)
+        hist = candles[-max(48, min(len(candles), days * 24)):]
+        strat = build_strategy(family, params or None, self.client)
+        curve: list[dict] = []
+        r = backtest(strat, hist, fee_rate=self.s.fee_rate, curve=curve)
+        step = max(1, len(curve) // 400)
+        return {"result": result_to_dict(r), "curve": curve[::step], "params": strat.params, "days": days, "bars": len(hist)}
+
+    # --- аналитика терминала: стресс-тест, похожесть, машина времени ---
+    def stress_test(self, moves: tuple[float, ...] = (-0.05, -0.02, 0.02, 0.05)) -> dict:
+        """Что будет с открытыми позициями при резком движении цены: убыток до стопа по каждому деску."""
+        price = self.last_price
+        team = [a for a in self.agents if is_team(a)]
+        equity = sum(a.equity(price) for a in team) or 1.0
+        out = {"equity": round(equity, 2), "moves": {}, "unprotected": 0, "exposure_pct": 0.0}
+        gross = 0.0
+        for a in team:
+            if abs(a.account.btc) * price >= 1.0:
+                gross += abs(a.account.btc) * price
+                if not a.stop_price:
+                    out["unprotected"] += 1
+        out["exposure_pct"] = round(gross / equity * 100, 1)
+        for m in moves:
+            total, desks = 0.0, {d: 0.0 for d in DESKS}
+            for a in team:
+                qty = a.account.btc
+                if abs(qty) * price < 1.0 or not price:
+                    continue
+                new_price = price * (1 + m)
+                pnl = (new_price - price) * qty
+                if a.stop_price:
+                    hit = (qty > 0 and new_price <= a.stop_price) or (qty < 0 and new_price >= a.stop_price)
+                    if hit:
+                        pnl = (a.stop_price * (1 - self.s.stop_slippage if qty > 0 else 1 + self.s.stop_slippage) - price) * qty
+                total += pnl
+                desks[a.desk] += pnl
+            out["moves"][f"{m*100:+.0f}"] = {"pnl": round(total, 2), "pct": round(total / equity * 100, 2), "desks": {d: round(v, 2) for d, v in desks.items()}}
+        worst = min((v["pnl"] for v in out["moves"].values()), default=0.0)
+        out["at_risk_pct"] = round(-worst / equity * 100, 2) if worst < 0 else 0.0
+        return out
+
+    def correlation(self, days: int = 7) -> dict:
+        """Матрица похожести трейдеров по часовым приращениям капитала."""
+        now_i = int(time.time())
+        team = [a for a in self.agents if is_team(a)]
+        series = self.j.hourly_pnl_series({a.name for a in team}, now_i - days * 86400)
+        names = [a.name for a in team if len(series.get(a.name, {})) >= 24]
+        if len(names) < 2:
+            return {"names": names, "matrix": [], "pairs": []}
+        hours = sorted(set().union(*(series[n].keys() for n in names)))
+        vec = {n: [series[n].get(h, 0.0) for h in hours] for n in names}
+
+        def corr(x, y):
+            n = len(x); mx, my = sum(x) / n, sum(y) / n
+            sxy = sum((a - mx) * (b - my) for a, b in zip(x, y))
+            sxx = sum((a - mx) ** 2 for a in x); syy = sum((b - my) ** 2 for b in y)
+            return sxy / ((sxx * syy) ** 0.5) if sxx > 0 and syy > 0 else 0.0
+        matrix = [[round(corr(vec[a], vec[b]), 2) for b in names] for a in names]
+        pairs = sorted(({"a": names[i], "b": names[j], "r": matrix[i][j]} for i in range(len(names)) for j in range(i + 1, len(names))),
+                       key=lambda p: -p["r"])
+        desk_of_name = {a.name: a.desk for a in team}
+        return {"names": names, "desks": [desk_of_name[n] for n in names], "matrix": matrix, "pairs": pairs[:8], "hours": len(hours)}
+
+    def snapshot_at(self, ts: int) -> dict:
+        """Машина времени: позиции, решения, режим директора и взгляды аналитиков на момент ts."""
+        team = [a for a in self.agents if a.status not in {"dropped", "experiment"}]
+        trades = self.j.trades_until({a.name for a in team}, ts)
+        cndl = next((c for c in reversed(self.last_candles) if c.ts <= ts), None)
+        price = cndl.close if cndl else self.last_price
+        positions = []
+        for a in team:
+            pos, avg = 0.0, 0.0
+            for t in trades.get(a.name, []):
+                q = t["qty"]; fee = t["fee"] or 0.0
+                if t["side"] == "BUY":
+                    if pos < -1e-12:
+                        cq = min(q, -pos); pos += cq; rest = q - cq
+                        if rest > 1e-12:
+                            avg = t["price"]; pos += rest
+                    else:
+                        total = avg * pos + t["price"] * q + fee; pos += q; avg = total / pos if pos else 0.0
+                else:
+                    if pos > 1e-12:
+                        cq = min(q, pos); pos -= cq; rest = q - cq
+                        if rest > 1e-12:
+                            avg = t["price"]; pos -= rest
+                    else:
+                        total = avg * (-pos) + t["price"] * q - fee; pos -= q; avg = total / (-pos) if pos else 0.0
+                if abs(pos) < 1e-12:
+                    pos, avg = 0.0, 0.0
+            if abs(pos) * price >= 1.0:
+                positions.append({"agent": a.name, "desk": a.desk, "side": "long" if pos > 0 else "short", "qty": round(abs(pos), 6),
+                                  "entry": round(avg, 2), "upnl": round((price - avg) * pos, 2)})
+        decs = self.j.decisions_around(ts, 3600, 80)
+        seen, latest = set(), []
+        for d in decs:
+            if d["agent"] in seen:
+                continue
+            seen.add(d["agent"]); latest.append(d)
+        head = self.j.events_before("head", ts, 1)
+        return {"ts": ts, "price": round(price, 2), "candle": cndl.__dict__ if cndl else None, "positions": positions, "decisions": latest[:30],
+                "head": head[0] if head else None, "views": self.j.views_before(ts),
+                "events": self.j._rows("SELECT * FROM events WHERE ts<=? AND ts>? AND kind IN ('stop','fire','hire','demote','halt','head','liquidation','owner','capital') ORDER BY ts DESC LIMIT 12", (ts, ts - 3600))}
 
     def knowledge_state(self) -> dict:
         kc = self.j.knowledge_counts()

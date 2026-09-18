@@ -146,6 +146,15 @@ class Agent:
     def after_trade_tick(self, price: float) -> None:
         self.bars_in_position = self.bars_in_position + 1 if self.account.btc > 0 else 0
 
+    def adjust_capital(self, delta: float) -> None:
+        """Перелить капитал на счёт (или с него) без искажения истории результата."""
+        self.account.cash += delta
+        self._start_balance += delta
+        self.peak_equity += delta
+        self.day_start_equity += delta
+        if self.week_start_equity:
+            self.week_start_equity += delta
+
     def reset_account(self, cash: float, ts: int) -> None:
         """Обнулить историю счёта (при повышении стажёра в команду)."""
         self.account.cash = cash

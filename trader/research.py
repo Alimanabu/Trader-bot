@@ -52,7 +52,7 @@ class BacktestResult:
 
 
 def backtest(strategy: Strategy, candles: list[Candle], start_balance: float = 1000.0,
-             fee_rate: float = 0.001, window: int = 300) -> BacktestResult:
+             fee_rate: float = 0.001, window: int = 300, curve: list | None = None) -> BacktestResult:
     acc = PaperAccount(owner="bt", cash=start_balance, fee_rate=fee_rate, allow_short=getattr(strategy, "side", "long") != "long")
     warm = max(strategy.warmup(), 2)
     equities: list[float] = []
@@ -68,6 +68,8 @@ def backtest(strategy: Strategy, candles: list[Candle], start_balance: float = 1
             acc.apply_funding(price, 8.0)
         eq = acc.equity(price)
         equities.append(eq)
+        if curve is not None:
+            curve.append({"ts": view[-1].ts, "equity": round(eq, 2), "price": price})
         peak = max(peak, eq)
         max_dd = max(max_dd, (peak - eq) / peak if peak else 0.0)
     if not equities:

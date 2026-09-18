@@ -17,3 +17,18 @@ self.addEventListener("fetch", (e) => {
       .catch(() => caches.match(e.request))
   );
 });
+
+// push-уведомления от сервера Botz
+self.addEventListener("push", (e) => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (_) { d = { title: "Botz", body: e.data ? e.data.text() : "" }; }
+  e.waitUntil(self.registration.showNotification(d.title || "Botz", { body: d.body || "", tag: d.tag || "botz", icon: "/static/icon.svg", badge: "/static/icon.svg", data: { url: d.url || "/" }, renotify: true }));
+});
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || "/";
+  e.waitUntil(clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+    for (const c of list) { if ("focus" in c) { c.navigate(url); return c.focus(); } }
+    return clients.openWindow(url);
+  }));
+});
