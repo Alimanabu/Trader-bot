@@ -30,6 +30,7 @@ from .llm import ClaudeClient
 from .manager import Director, is_intern, is_team
 from .models import Candle, Trade
 from .paper import PaperAccount
+from .signals import SignalDesk, is_follower
 from .risk import RiskManager
 
 log = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ class Engine:
         self.head = self.director          # старое имя, используется в тестах и cli
         self.analytics = AnalyticsDept(settings, self.j, self.client)
         self.learner = Learner(settings, self.j, self.client)
+        self.signals = SignalDesk(settings, self.j)
         self.agents: list[Agent] = []
         self.last_candles: list[Candle] = []
         self.last_tick_ts: int = self.j.kv_get("last_tick_ts", 0)
@@ -234,13 +236,18 @@ class Engine:
             entry = a.account._avg_entry or price
             dist = self.risk.stop_distance(atr_pct)
             opening = trade.pnl is None and (a.stop_price <= 0 or abs(trade.pos_after - (trade.qty if trade.side == "BUY" else -trade.qty)) < 1e-12)
+            sig_stop = float(((a.last_signal.meta if a.last_signal else None) or {}).get("stop") or 0.0)   # стоп из внешнего сигнала
             if pos > 0 and trade.side == "BUY":
                 new_stop = entry * (1 - dist)
+                if opening and 0 < sig_stop < entry:
+                    new_stop = sig_stop
                 a.stop_price = new_stop if opening else max(a.stop_price, new_stop)
                 if opening:
                     a.best_price, a.partial_taken = price, False
             elif pos < 0 and trade.side == "SELL":
                 new_stop = entry * (1 + dist)
+                if opening and sig_stop > entry:
+                    new_stop = sig_stop
                 a.stop_price = new_stop if opening else min(a.stop_price, new_stop)
                 if opening:
                     a.best_price, a.partial_taken = price, False
@@ -430,6 +437,7 @@ class Engine:
             self.last_tick_ts = last.ts
         dk = day_key_of(now_i)
         summary = {"ok": True, "ts": last.ts, "price": price, "new_candle": new_candle, "decisions": [], "fired": [], "hired": []}
+        summary["signals"] = self._evaluate_signals(price, now_i)
 
         alive = [a for a in self.agents if a.status not in {"fired", "dropped"}]
         wk = self.director.week_key(now_i)
@@ -541,6 +549,7 @@ class Engine:
                     log.exception("стратег развития: %s", e)
         hired = self.director.hire_if_needed(self.agents, candles, now_i)
         new_interns = self.director.fill_interns(self.agents, candles, now_i)
+        new_interns += self.signals.sync_followers(self.agents, price, now_i, self.director)
         for h in hired + new_interns:
             h.last_ts_seen = now_i
             h.roll_day(dk, price)
@@ -565,6 +574,19 @@ class Engine:
         self._push_new_events(now_i)
         return summary
 
+    def _evaluate_signals(self, price: float, now_i: int) -> list[dict]:
+        """Проверить внешние сигналы по цене, учитывая максимум и минимум минутных свечей с прошлой проверки."""
+        last = int(self.j.kv_get("signals_eval_ts", 0) or 0)
+        recent = [c for c in self.m1 if c.ts >= last - 60] if last else self.m1[-2:]
+        hi = max((c.high for c in recent), default=price)
+        lo = min((c.low for c in recent), default=price)
+        self.j.kv_set("signals_eval_ts", now_i)
+        try:
+            return self.signals.evaluate(price, now_i, hi, lo)
+        except Exception as e:  # noqa: BLE001
+            log.exception("отдел сигналов: %s", e)
+            return []
+
     def _should_log(self, a: Agent, sig, trade, now_i: int) -> bool:
         """Не засорять журнал: пишем сделки, смену цели и часовой контрольный отпечаток."""
         if trade is not None or a.strategy.uses_llm():
@@ -582,6 +604,8 @@ class Engine:
 
     def _intern_step(self, a: Agent, candles: list[Candle], price: float, ts: int, atr_pct: float = 0.01) -> None:
         ctx = {"exposure": a.account.exposure(price), "bars_in_position": a.bars_in_position, "entry": a.account._avg_entry}
+        if is_follower(a):
+            ctx["signals"] = self.signals.open_for(a.strategy.params.get("source", ""))
         try:
             sig = a.strategy.decide(candles, ctx)
         except Exception as e:  # noqa: BLE001
@@ -622,6 +646,8 @@ class Engine:
     def _agent_step(self, a: Agent, candles: list[Candle], price: float, ts: int, why_due: str = "", atr_pct: float = 0.01) -> dict:
         ctx = {"exposure": a.account.exposure(price), "lessons": a.notes, "bars_in_position": a.bars_in_position, "entry": a.account._avg_entry,
                "llm_min_interval": self.s.llm_min_interval_min, "llm_max_interval": self.s.llm_max_interval_min, "woke_by": why_due}
+        if is_follower(a):
+            ctx["signals"] = self.signals.open_for(a.strategy.params.get("source", ""))
         try:
             sig = a.strategy.decide(candles, ctx)
         except Exception as e:  # noqa: BLE001
@@ -791,6 +817,7 @@ class Engine:
                 "events": self.j.events_of(("lesson", "retune"), 12),
             },
             "knowledge": self.knowledge_state(),
+            "signals": self.signals.state(self.agents, price, now_i),
             "stress": self.stress_test(),
             "macro": self.macro(),
             "alerts": self.j.alerts(),
@@ -923,7 +950,7 @@ class Engine:
     # --- push-уведомления ---
     PUSH_KINDS = {"stop": "Стоп", "approval": "Решение", "head": "Директор", "fire": "Увольнение", "halt": "Стоп компании",
                   "liquidation": "Ликвидация", "live_ready": "Кандидат на реальный счёт", "weekly": "Недельная ротация",
-                  "alert": "Сигнал", "briefing": "Утренний брифинг", "capital": "Капитал", "rule": "Правило", "owner": "Владелец", "live": "Реальный счёт"}
+                  "alert": "Сигнал", "briefing": "Утренний брифинг", "capital": "Капитал", "rule": "Правило", "owner": "Владелец", "live": "Реальный счёт", "signal": "Внешний сигнал"}
 
     def _push_new_events(self, now_i: int) -> None:
         if not self.push:
@@ -940,7 +967,8 @@ class Engine:
             self.j.kv_set("push_last_event_id", new_max)
             return
         self.j.kv_set("push_last_event_id", new_max)
-        picked = [e for e in reversed(events) if e["kind"] in self.PUSH_KINDS and not (e["kind"] == "stop" and "зафиксировал" in e["message"])]
+        picked = [e for e in reversed(events) if e["kind"] in self.PUSH_KINDS and not (e["kind"] == "stop" and "зафиксировал" in e["message"])
+                  and not (e["kind"] == "signal" and e["message"].startswith("Новый сигнал"))]
         if not picked:
             return
         pending = [p["title"] for p in self.j.pending_approvals()]

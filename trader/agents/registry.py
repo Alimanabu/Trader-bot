@@ -16,9 +16,12 @@ from .llm import LLM_STRATEGIES
 from .community import COMMUNITY_STRATEGIES
 from .rules import RULE_STRATEGIES
 from .scalper import EXPERIMENT_STRATEGIES
+from .signals import EXTERNAL_STRATEGIES
 from .sided import SHORTABLE, Sided
 
-STRATEGY_FAMILIES: dict[str, type[Strategy]] = {s.family: s for s in RULE_STRATEGIES + COMMUNITY_STRATEGIES + LLM_STRATEGIES + EXPERIMENT_STRATEGIES}
+STRATEGY_FAMILIES: dict[str, type[Strategy]] = {s.family: s for s in RULE_STRATEGIES + COMMUNITY_STRATEGIES + LLM_STRATEGIES + EXPERIMENT_STRATEGIES + EXTERNAL_STRATEGIES}
+# семейства, решения которых приходят извне (последователи сигналов): их не исследуют и не переобучают
+EXTERNAL_FAMILIES = {s.family for s in EXTERNAL_STRATEGIES}
 # экспериментальные агенты: вне десков, на своём счёте, для проверки идей на живых данных
 EXPERIMENTS = {"scalper": "Скальпер"}
 # семейства фьючерсного демо-режима: <база>_short и <база>_both
@@ -57,7 +60,7 @@ def family_side(family: str) -> str:
 
 
 def all_families() -> list[str]:
-    return [f for f in STRATEGY_FAMILIES if not f.startswith("llm_") and f not in EXPERIMENTS] + list(SIDED_FAMILIES)
+    return [f for f in STRATEGY_FAMILIES if not f.startswith("llm_") and f not in EXPERIMENTS and f not in EXTERNAL_FAMILIES] + list(SIDED_FAMILIES)
 
 
 # Штатные агенты по дескам (порядок важен: первые desk_size каждого деска попадают в команду при первом запуске)
@@ -108,6 +111,7 @@ FAMILY_LABELS = {
     "vwap_breakout": "Пробой VWAP",
     "stoch_rsi": "Стох-RSI",
     "cmf_trend": "Поток Чайкина",
+    "signal_follower": "Сигналы",
 }
 
 

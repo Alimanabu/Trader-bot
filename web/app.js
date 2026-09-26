@@ -13,7 +13,7 @@
   const RANK = ["Стажёр", "Трейдер", "Старший трейдер", "Реальный счёт"];
   const DESK = { bulls: "Быки", bears: "Медведи", both: "Двусторонние" };
   const REG = { up: "рост", flat: "боковик", down: "падение", off: "выключено" };
-  const KIND = { alert: "сигнал", briefing: "брифинг", capital: "капитал", live: "реальный счёт", owner: "владелец", knowledge: "база знаний", rule: "правило", reviser: "ревизор", strategist: "стратег", fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", stop: "стоп-лосс", demote: "в стажёры", weekly: "ротация", live_ready: "к реальным торгам", head: "директор", rank: "звание", analytics: "аналитика", funding: "финансирование", liquidation: "ликвидация", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
+  const KIND = { signal: "внешний сигнал", alert: "сигнал", briefing: "брифинг", capital: "капитал", live: "реальный счёт", owner: "владелец", knowledge: "база знаний", rule: "правило", reviser: "ревизор", strategist: "стратег", fire: "увольнение", hire: "найм", intern: "стажёры", drop: "отчисление", stop: "стоп-лосс", demote: "в стажёры", weekly: "ротация", live_ready: "к реальным торгам", head: "директор", rank: "звание", analytics: "аналитика", funding: "финансирование", liquidation: "ликвидация", pause: "пауза", halt: "стоп", report: "отчёт", lesson: "урок", retune: "настройка", research: "исследование", start: "старт", error: "ошибка", approval: "решение" };
   function tradeCell(x) {
     if (x.trade_side) return `<span class="${x.trade_side === "BUY" ? "up" : "down"}">${x.trade_side === "BUY" ? "купил" : "продал"} ${fmt(x.trade_qty, 5)} BTC</span>`;
     if (!x.executed) return `<span class="warn">${esc(x.blocked_by || "заблокировано")}</span>`;
@@ -27,7 +27,7 @@
   let heatRange = "7d", corrData = null, labResult = null, labFamily = "", labParams = {}, labDays = 30, labBusy = false;
   try { chartMode = localStorage.getItem("botz.chart") || "price"; notifyOn = localStorage.getItem("botz.notify") === "1"; } catch (_) {}
   const openRows = new Set();
-  let showInternTrades = false, showInternPos = false, showLibrary = false;
+  let showInternTrades = false, showInternPos = false, showLibrary = false, sigNote = "";
   const isShadow = (k) => k === "intern" || k === "experiment";
   const TZ = "Asia/Almaty";   // Астана, UTC+5
   const astanaTime = (d) => d.toLocaleTimeString("ru-RU", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
@@ -376,6 +376,37 @@
       ${s.llm ? rows : '<div class="note warn">Без ключа Claude API аналитический отдел молчит, директор работает только по своим правилам.</div>'}
       ${s.llm_error ? `<div class="note down" style="margin-top:8px">Последняя ошибка (${hhmm(s.llm_error.ts)}): ${esc(s.llm_error.text)}</div>` : ""}</div>`;
   }
+  function signalsHTML(s) {
+    const g = s.signals || { sources: [], live: [], recent: [] };
+    const RATE = { checking: "", candidate: "green", failed: "bear" };
+    const RES = { hit: "green", stopped: "bear", expired: "", cancelled: "" };
+    const src = (g.sources || []).map((x) => `<tr><td><b>${esc(x.source)}</b>${x.follower ? `<div class="note dim">стажёр: <b class="open-agent" data-name="${esc(x.follower.name)}" style="cursor:pointer">${esc(x.follower.name)}</b> · ${STATUS[x.follower.status] || x.follower.status}</div>` : ""}</td>
+        <td><span class="pill ${RATE[x.rating]}">${esc(x.rating_ru)}</span>${x.rating === "checking" ? `<div class="note dim num">ещё ${x.need}</div>` : ""}</td>
+        <td class="r num">${x.scored}<span class="dim"> / ${x.signals}</span></td>
+        <td class="r num">${x.accuracy == null ? "—" : fmt(x.accuracy, 0) + "%"}</td>
+        <td class="r num ${cls(x.total_pct)}">${x.scored ? sign(x.total_pct, 1) + "%" : "—"}</td></tr>`).join("");
+    const live = (g.live || []).map((x) => `<li><span class="pill ${x.side === "long" ? "green" : "bear"}">${esc(x.side_ru)}</span> <b>${esc(x.source)}</b> <span class="num">вход ${fmt(x.entry, 0)}${x.stop ? ` · стоп ${fmt(x.stop, 0)}` : " · без стопа"}${x.target ? ` · цель ${fmt(x.target, 0)}` : ""}</span> <span class="dim">${esc(x.status_ru)}${x.status === "open" ? ` ${fmt(x.hours, 1)} ч` : ""}</span>${x.pnl_pct != null ? ` <b class="num ${cls(x.pnl_pct)}">${sign(x.pnl_pct)}%</b>` : ""} <button class="btn mini sig-del" data-id="${x.id}">отменить</button></li>`).join("");
+    const recent = (g.recent || []).map((x) => `<li><span class="dim num">${time(x.result_ts || x.ts)}</span> <span class="pill ${RES[x.status] || ""}">${esc(x.status_ru)}</span> ${esc(x.source)} · ${esc(x.side_ru)} от ${fmt(x.entry, 0)}${x.result_pct != null ? ` → <b class="num ${cls(x.result_pct)}">${sign(x.result_pct)}%</b>` : ""}</li>`).join("");
+    return `<div class="card"><h3>Внешние сигналы · проверка источников</h3>
+      <div class="note">Сигналы из каналов и от чужих трейдеров компания сначала проверяет на бумаге, а не копирует. Вставь сигнал как есть: направление, вход, стоп, цель. Дальше отдел сам следит за ценой: цель, стоп или закрытие через ${g.max_h} ч. Источник с ${g.min_count} проверенными сигналами и точностью от ${fmt(g.min_accuracy, 0)}% в плюсе становится кандидатом, и для него создаётся стажёр-последователь. Комиссии ${fmt(g.fees_pct, 2)}% за круг вычитаются из каждого результата.</div>
+      <div class="alertform sigform">
+        <input id="sig-source" list="sig-sources" placeholder="источник (канал, трейдер)" style="width:200px">
+        <datalist id="sig-sources">${(g.sources || []).map((x) => `<option value="${esc(x.source)}">`).join("")}</datalist>
+        <input id="sig-text" placeholder="текст сигнала: LONG вход 80500 стоп 79800 цель 82000" style="flex:1;min-width:220px">
+      </div>
+      <div class="alertform sigform" style="margin-top:6px">
+        <select id="sig-side"><option value="">направление из текста</option><option value="long">лонг</option><option value="short">шорт</option></select>
+        <input id="sig-entry" type="number" step="any" placeholder="вход (или рынок)">
+        <input id="sig-stop" type="number" step="any" placeholder="стоп">
+        <input id="sig-target" type="number" step="any" placeholder="цель">
+        <button class="btn" id="sig-parse">Разобрать</button>
+        <button class="btn primary" id="sig-add">Добавить сигнал</button>
+      </div>
+      <div class="note dim" id="sig-msg" style="margin-top:6px">${esc(sigNote)}</div>
+      ${src ? `<div class="tbl" style="margin-top:10px"><table><tr><th>Источник</th><th>Оценка</th><th class="r">Проверено</th><th class="r">Точность</th><th class="r">Итог</th></tr>${src}</table></div>` : '<div class="note" style="margin-top:8px">Источников пока нет. Добавь первый сигнал, и отдел начнёт вести его рейтинг.</div>'}
+      ${live ? `<h3 style="margin-top:14px">Живые сигналы · ${g.live.length}</h3><ul class="kb">${live}</ul>` : ""}
+      ${recent ? `<h3 style="margin-top:14px">Последние результаты</h3><ul class="kb">${recent}</ul>` : ""}</div>`;
+  }
   function riskHTML(s) {
     const r = s.risk || { limits: {}, week: {} };
     const L = r.limits, W = r.week;
@@ -534,7 +565,7 @@
         : `<div class="note">Мост к бирже: сделки трейдеров со званием «Реальный счёт» повторяются на Binance пропорционально выделенной сумме. Сначала тестовая сеть (виртуальные деньги, настоящие ордера), потом реальный счёт. Включается в <b>.env</b>: LIVE_ENABLED=true, LIVE_API_KEY и LIVE_API_SECRET от testnet.binance.vision, LIVE_CAPITAL_USD. Пока зеркалятся только покупки и продажи на споте (деск быков).</div>`}</div>`;
   }
   function companyHTML(s) {
-    return `<h2 class="sec">Компания Botz · отделы</h2>` + approvalsHTML(s) + directorHTML(s) + knowledgeHTML(s) + analyticsHTML(s) + riskHTML(s) + alertsHTML(s) + scienceHTML(s) + labHTML(s) + correlationHTML(s) + experimentsHTML(s) + liveHTML(s) + learningHTML(s);
+    return `<h2 class="sec">Компания Botz · отделы</h2>` + approvalsHTML(s) + directorHTML(s) + knowledgeHTML(s) + analyticsHTML(s) + signalsHTML(s) + riskHTML(s) + alertsHTML(s) + scienceHTML(s) + labHTML(s) + correlationHTML(s) + experimentsHTML(s) + liveHTML(s) + learningHTML(s);
   }
 
   // ---------- отчёты ----------
@@ -782,6 +813,34 @@
         refresh(true);
       };
       $$(".al-del", view).forEach((b) => b.addEventListener("click", async () => { await api(`/api/alerts/${b.dataset.id}`, { method: "DELETE" }); refresh(true); }));
+    }
+    // внешние сигналы
+    const sigAdd = $("#sig-add", view);
+    if (sigAdd) {
+      const fields = () => ({ source: $("#sig-source", view).value, text: $("#sig-text", view).value, side: $("#sig-side", view).value,
+        entry: Number($("#sig-entry", view).value || 0), stop: Number($("#sig-stop", view).value || 0), target: Number($("#sig-target", view).value || 0) });
+      const msg = (t, bad) => { const m = $("#sig-msg", view); if (m) { m.textContent = t; m.className = "note " + (bad ? "down" : "dim"); } };
+      $("#sig-parse", view).onclick = async () => {
+        try {
+          const p = await api("/api/signals/parse", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: fields().text }) });
+          if (p.side) $("#sig-side", view).value = p.side;
+          if (p.entry) $("#sig-entry", view).value = p.entry;
+          if (p.stop) $("#sig-stop", view).value = p.stop;
+          if (p.target) $("#sig-target", view).value = p.target;
+          msg(p.entry || p.stop || p.target ? `Разобрано: ${p.side === "long" ? "лонг" : p.side === "short" ? "шорт" : "направление не найдено"}, вход ${p.entry ? fmt(p.entry, 0) : "по рынку"}, стоп ${p.stop ? fmt(p.stop, 0) : "нет"}, цель ${p.target ? fmt(p.target, 0) : "нет"}${p.targets?.length > 1 ? ` (целей ${p.targets.length}, берём первую)` : ""}. Проверь и нажми «Добавить».` : "В тексте не нашлось уровней. Заполни поля вручную.", !p.entry && !p.stop && !p.target);
+        } catch (e) { msg("Не удалось разобрать: " + e.message, true); }
+      };
+      sigAdd.onclick = async () => {
+        const f = fields();
+        if (!f.source) { msg("Укажи источник сигнала.", true); return; }
+        try {
+          const r = await api("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(f) });
+          sigNote = `Сигнал записан: ${r.signal.side === "long" ? "лонг" : "шорт"} от ${fmt(r.signal.entry, 0)} (${r.signal.status === "pending" ? "ждёт цены входа" : "в рынке"}).`;
+          await refresh(true);
+          sigNote = "";
+        } catch (e) { msg("Не принято: " + e.message, true); }
+      };
+      $$(".sig-del", view).forEach((b) => b.addEventListener("click", async () => { if (confirm("Отменить сигнал? Он не попадёт в рейтинг источника.")) { await api(`/api/signals/${b.dataset.id}`, { method: "DELETE" }); refresh(true); } }));
     }
     // лаборатория
     const lf = $("#lab-family", view);

@@ -438,7 +438,7 @@ class Director:
         targets = only if only is not None else [a for a in agents if a.status not in {"fired", "dropped"} and (all_agents or is_team(a))]
         n = 0
         for a in targets:
-            if a.strategy.uses_llm() or getattr(a.strategy, "timeframe", "1h") != "1h":
+            if a.strategy.uses_llm() or getattr(a.strategy, "timeframe", "1h") != "1h" or getattr(a.strategy, "external", False):
                 continue
             try:
                 best = self.lab.best_params(a.strategy.family, hist)
@@ -527,7 +527,7 @@ class Director:
     # --- стажёры ---
     def fill_interns(self, agents: list[Agent], candles: list[Candle], ts: int) -> list[Agent]:
         """Добрать стажёров до intern_count из скамейки кандидатов, по очереди для каждого деска."""
-        interns = [a for a in agents if is_intern(a)]
+        interns = [a for a in agents if is_intern(a) and not getattr(a.strategy, "external", False)]   # последователи сигналов сверх штата
         need = self.s.intern_count - len(interns)
         added: list[Agent] = []
         if need <= 0:
@@ -636,7 +636,7 @@ class Director:
 
     def drop_idle_interns(self, agents: list[Agent], price: float, ts: int) -> list[str]:
         out = []
-        for a in [x for x in agents if is_intern(x)]:
+        for a in [x for x in agents if is_intern(x) and not getattr(x.strategy, "external", False)]:   # последователь ждёт сигналов, это не простой
             d = self.idle_days(a, ts)
             if d >= self.s.intern_idle_days:
                 self.drop_intern(a, price, ts, f"нет сделок {d:.0f} дн.")

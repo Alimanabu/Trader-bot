@@ -331,6 +331,7 @@ html.light .pill.rank-1 { background: #e6e9f2; }
 .alertform, .labform { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
 .alertform select, .alertform input, .labform select { background: var(--card2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font-size: 13px; max-width: 100%; }
 .alertform input { width: 120px; }
+.sigform input[type=number] { width: 130px; }
 .labparams { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .labparams label { display: flex; flex-direction: column; font-size: 11px; color: var(--muted); gap: 2px; }
 .labparams input { width: 90px; background: var(--card2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font-size: 13px; }

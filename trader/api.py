@@ -132,6 +132,38 @@ def create_app(engine: Engine | None = None, start_scheduler: bool = True) -> Fa
         return {"analysts": engine.analytics.stats(), "views": engine.j.recent_views(None, 40),
                 "consensus": engine.analytics.consensus(int(__import__("time").time()))}
 
+    @app.get("/api/signals")
+    def signals_list():
+        return engine.signals.state(engine.agents, engine.last_price, int(__import__("time").time()))
+
+    @app.post("/api/signals/parse")
+    async def signals_parse(request: Request):
+        from .signals import parse_signal
+        body = await request.json()
+        return parse_signal(str(body.get("text") or ""), engine.last_price or None)
+
+    @app.post("/api/signals")
+    async def signals_add(request: Request):
+        from .signals import parse_signal
+        body = await request.json()
+        parsed = parse_signal(str(body.get("text") or ""), engine.last_price or None) if body.get("text") else {}
+
+        def pick(key):
+            v = body.get(key)
+            return v if v not in (None, "", 0, "0") else parsed.get(key)
+        try:
+            s = engine.signals.add(engine.last_poll_ts or int(__import__("time").time()), str(body.get("source") or ""), str(pick("side") or ""),
+                                   pick("entry"), pick("stop"), pick("target"), str(body.get("text") or body.get("note") or ""), engine.last_price)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True, "signal": s}
+
+    @app.delete("/api/signals/{sid}")
+    def signals_cancel(sid: int):
+        if not engine.signals.cancel(sid, engine.last_poll_ts or int(__import__("time").time())):
+            raise HTTPException(404, "сигнал не найден или уже закрыт")
+        return {"ok": True}
+
     @app.get("/api/positions")
     def positions():
         return engine.open_positions(int(__import__("time").time()))

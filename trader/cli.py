@@ -66,6 +66,15 @@ def review(settings_port: int = 8080) -> int:
     best = sorted(team, key=lambda a: -a["pnl_total"])[:3]
     print("\nЛучшие: " + "; ".join(f"{a['name']} {a['pnl_total']:+.2f}" for a in best))
     print("Худшие: " + "; ".join(f"{a['name']} {a['pnl_total']:+.2f} (просадка {a['drawdown']*100:.1f}%)" for a in worst))
+    sg = s.get("signals") or {}
+    if sg.get("sources"):
+        print("\n--- Внешние сигналы ---")
+        for x in sg["sources"]:
+            acc = "—" if x["accuracy"] is None else f"{x['accuracy']:.0f}%"
+            print(f"{x['source'][:24]:<24} {x['rating_ru']:<10} проверено {x['scored']}/{x['signals']} · точность {acc} · итог {x['total_pct']:+.1f}%"
+                  + (f" · стажёр {x['follower']['name']}" if x.get("follower") else ""))
+        for x in sg.get("live", []):
+            print(f"  {x['side_ru']} от {x['entry']:.0f} ({x['source']}) · {x['status_ru']}" + (f" · {x['pnl_pct']:+.2f}%" if x.get("pnl_pct") is not None else ""))
     print("\n--- Последние события ---")
     for e in s.get("events", [])[:8]:
         print(f"{t(e['ts'])} [{e['kind']}] {e['message'][:140]}")

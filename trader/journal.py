@@ -88,6 +88,15 @@ CREATE TABLE IF NOT EXISTS live_orders (
     ts INTEGER NOT NULL, agent TEXT NOT NULL, side TEXT NOT NULL, qty REAL NOT NULL, quote REAL NOT NULL, price REAL NOT NULL,
     status TEXT NOT NULL, order_id TEXT, testnet INTEGER NOT NULL DEFAULT 1, error TEXT
 );
+CREATE TABLE IF NOT EXISTS signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL, source TEXT NOT NULL, side TEXT NOT NULL,
+    entry REAL NOT NULL, stop REAL NOT NULL DEFAULT 0, target REAL NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '', price_at REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'open',      -- pending | open | hit | stopped | expired | cancelled
+    opened_ts INTEGER NOT NULL DEFAULT 0, result_pct REAL, result_ts INTEGER, result_price REAL
+);
+CREATE INDEX IF NOT EXISTS idx_signals_source ON signals(source, status);
 CREATE TABLE IF NOT EXISTS regime_memory (
     scope TEXT NOT NULL, key TEXT NOT NULL, regime TEXT NOT NULL,
     days INTEGER NOT NULL DEFAULT 0, pct_sum REAL NOT NULL DEFAULT 0, wins INTEGER NOT NULL DEFAULT 0,
@@ -301,7 +310,7 @@ class Journal:
             "trades": len(rows), "closed": len(closed), "wins": len(wins),
             "win_rate": (len(wins) / len(closed)) if closed else None,
             "avg_win": (gw / len(wins)) if wins else 0.0, "avg_loss": (-gl / len(losses)) if losses else 0.0,
-            "profit_factor": (gw / gl) if gl > 0 else (None if not wins else float("inf")),
+            "profit_factor": (gw / gl) if gl > 0 else (None if not wins else 999.0),   # без убытков: JSON не принимает бесконечность
             "fees": sum(r["fee"] or 0.0 for r in rows), "pnl": sum(r["pnl"] for r in closed),
             "best": {"agent": best["agent"], "pnl": best["pnl"], "ts": best["ts"]} if best else None,
             "worst": {"agent": worst["agent"], "pnl": worst["pnl"], "ts": worst["ts"]} if worst else None,
@@ -458,6 +467,54 @@ class Journal:
         rows = self._rows("SELECT COUNT(*) AS n, SUM(COALESCE(hit,0)) AS h FROM views WHERE analyst=? AND ts>? AND ts<=? AND outcome_pct IS NOT NULL",
                           (analyst, ts_from, ts_to))
         return int(rows[0]["n"] or 0), int(rows[0]["h"] or 0)
+
+    # --- отдел внешних сигналов ---
+    def signal_add(self, ts: int, source: str, side: str, entry: float, stop: float, target: float, note: str,
+                   price_at: float, status: str = "open") -> int:
+        cur = self._exec("INSERT INTO signals(ts,source,side,entry,stop,target,note,price_at,status,opened_ts) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                         (ts, source, side, entry, stop, target, note, price_at, status, ts if status == "open" else 0))
+        return cur.lastrowid
+
+    def signal_by_id(self, sid: int) -> dict | None:
+        rows = self._rows("SELECT * FROM signals WHERE id=?", (sid,))
+        return rows[0] if rows else None
+
+    def signals(self, source: str | None = None, status: str | None = None, limit: int = 100) -> list[dict]:
+        sql, params = "SELECT * FROM signals WHERE 1=1", []
+        if source:
+            sql += " AND source=?"; params.append(source)
+        if status:
+            sql += " AND status=?"; params.append(status)
+        return self._rows(sql + " ORDER BY id DESC LIMIT ?", (*params, limit))
+
+    def signals_live(self) -> list[dict]:
+        """Сигналы, которые ещё ждут входа или находятся в рынке."""
+        return self._rows("SELECT * FROM signals WHERE status IN ('pending','open') ORDER BY id")
+
+    def signal_open(self, sid: int, ts: int) -> None:
+        self._exec("UPDATE signals SET status='open', opened_ts=? WHERE id=?", (ts, sid))
+
+    def signal_close(self, sid: int, status: str, pct: float | None, ts: int, price: float) -> None:
+        self._exec("UPDATE signals SET status=?, result_pct=?, result_ts=?, result_price=? WHERE id=?", (status, pct, ts, price, sid))
+
+    def signal_sources(self) -> list[dict]:
+        """Статистика по каждому источнику: сколько сигналов, сколько проверено, сколько сработало, суммарный %."""
+        rows = self._rows(
+            "SELECT source, COUNT(*) AS n, MAX(ts) AS last_ts, "
+            "SUM(CASE WHEN status IN ('hit','stopped','expired') THEN 1 ELSE 0 END) AS scored, "
+            "SUM(CASE WHEN status IN ('hit','stopped','expired') AND result_pct > 0 THEN 1 ELSE 0 END) AS wins, "
+            "SUM(CASE WHEN status IN ('hit','stopped','expired') THEN result_pct ELSE 0 END) AS total_pct, "
+            "SUM(CASE WHEN status IN ('pending','open') THEN 1 ELSE 0 END) AS live "
+            "FROM signals GROUP BY source ORDER BY total_pct DESC")
+        out = []
+        for r in rows:
+            scored = int(r["scored"] or 0)
+            out.append({"source": r["source"], "signals": int(r["n"]), "scored": scored, "wins": int(r["wins"] or 0),
+                        "losses": scored - int(r["wins"] or 0), "total_pct": round(float(r["total_pct"] or 0.0), 2),
+                        "accuracy": (int(r["wins"] or 0) / scored * 100) if scored else None,
+                        "avg_pct": (float(r["total_pct"] or 0.0) / scored) if scored else None,
+                        "live": int(r["live"] or 0), "last_ts": int(r["last_ts"] or 0)})
+        return out
 
     # --- база знаний компании ---
     def add_knowledge(self, ts: int, kind: str, topic: str, text: str, source: str = "", data: dict | None = None,
