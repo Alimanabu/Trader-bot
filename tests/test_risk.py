@@ -63,3 +63,31 @@ def test_department_halt():
     assert not ok and "компании" in why
     ok2, _ = rm.check_department(agents, 100.0, "2026-01-02")
     assert ok2
+
+
+def test_paused_trader_is_not_paused_again(settings):
+    from tests.test_engine import make_engine
+    eng, market = make_engine(settings)
+    last = market.candles("BTCUSDT", "1h", 1)[-1]
+    T = last.ts + 3600 + 5
+    eng.tick(now=T)
+    a = next(x for x in eng.agents if x.status == "active")
+    a.account.cash -= a.equity(eng.last_price) * 0.05          # дневной убыток 5% > лимита 3%
+    for k in range(6):
+        eng.tick(now=T + 60 * (k + 1), force=True)
+    assert a.status == "paused"
+    pauses = [e for e in eng.j.recent_events(200) if e["kind"] == "pause" and e["agent"] == a.name]
+    assert len(pauses) == 1
+
+
+def test_llm_schemas_have_no_numeric_bounds():
+    """API структурированных ответов не принимает minimum/maximum: запрос с ними падает с ошибкой 400."""
+    import json
+    from trader.analytics import VIEW_SCHEMA, RULE_SCHEMA, STRATEGY_SCHEMA
+    from trader.agents.llm import DECISION_SCHEMA
+    from trader.learning import LESSON_SCHEMA
+    from trader.manager import REPORT_SCHEMA
+    for schema in (VIEW_SCHEMA, RULE_SCHEMA, STRATEGY_SCHEMA, DECISION_SCHEMA, LESSON_SCHEMA, REPORT_SCHEMA):
+        text = json.dumps(schema)
+        for bad in ("minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems", "multipleOf"):
+            assert bad not in text

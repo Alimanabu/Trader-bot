@@ -129,9 +129,12 @@ class ClaudeClient:
             if self._fallbacks_supported:
                 log.warning("Серверные fallbacks не приняты (%s), повторяю без них", e.message)
                 self._fallbacks_supported = False
-                response = self._client.messages.create(**kwargs)
+                try:
+                    response = self._client.messages.create(**kwargs)
+                except anthropic.APIStatusError as e2:
+                    self._fail(f"ошибка API {e2.status_code}: {e2.message}")
             else:
-                raise
+                self._fail(f"неверный запрос: {e.message}")
         except anthropic.RateLimitError as e:
             self._fail(f"лимит запросов: {e.message}")
         except anthropic.APIConnectionError as e:

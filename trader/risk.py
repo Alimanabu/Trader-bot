@@ -152,12 +152,12 @@ class RiskManager:
         dd = agent.drawdown(price)
         if dd >= self.s.agent_max_drawdown:
             return RiskVerdict(False, 0.0, f"просадка {dd*100:.1f}% ≥ лимита {self.s.agent_max_drawdown*100:.0f}%: увольнение", fire=True)
+        if agent.status == "paused":
+            return RiskVerdict(False, 0.0, "агент на паузе до конца дня")
         if agent.day_start_equity > 0:
             day_loss = (agent.day_start_equity - eq) / agent.day_start_equity
             if day_loss >= self.s.agent_daily_loss_limit:
                 return RiskVerdict(False, 0.0, f"дневной убыток {day_loss*100:.2f}% ≥ лимита {self.s.agent_daily_loss_limit*100:.1f}%: пауза до конца дня", pause=True)
-        if agent.status == "paused":
-            return RiskVerdict(False, 0.0, "агент на паузе до конца дня")
         if rule_note:
             return RiskVerdict(True, target, ("правило: " if not rule_note.startswith("правило") else "") + rule_note)
         if abs(target - signal.target_exposure) > 1e-9:

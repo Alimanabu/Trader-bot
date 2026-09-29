@@ -519,7 +519,7 @@ class Engine:
             a_view, a_atr = (self.m1, self.atr_m1) if hf else (view, atr_pct)
             if is_intern(a) or is_experiment(a):
                 self._intern_step(a, a_view, price, now_i, a_atr)
-            elif is_team(a) and ok:
+            elif is_team(a) and ok and a.status != "paused":      # на паузе до конца дня: не опрашиваем
                 summary["decisions"].append(self._agent_step(a, a_view, price, now_i, why_due, a_atr))
                 if a.status == "fired":
                     summary["fired"].append(a.name)

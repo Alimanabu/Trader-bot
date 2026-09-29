@@ -15,11 +15,11 @@ DECISION_SCHEMA = {
     "type": "object",
     "properties": {
         "action": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
-        "target_exposure": {"type": "number", "minimum": 0, "maximum": 1},
-        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "target_exposure": {"type": "number"},
+        "confidence": {"type": "number"},
         "reason": {"type": "string"},
         "key_levels": {"type": "array", "items": {"type": "number"}},
-        "next_check_minutes": {"type": "integer", "minimum": 1, "maximum": 1440},
+        "next_check_minutes": {"type": "integer"},
         "wake_if_above": {"type": "number"},
         "wake_if_below": {"type": "number"},
     },
@@ -92,7 +92,7 @@ class LLMStrategyBase(Strategy):
         )
         schema = DECISION_SCHEMA
         if context.get("two_sided"):
-            schema = {**DECISION_SCHEMA, "properties": {**DECISION_SCHEMA["properties"], "target_exposure": {"type": "number", "minimum": -1, "maximum": 1}}}
+            schema = {**DECISION_SCHEMA, "properties": {**DECISION_SCHEMA["properties"], "target_exposure": {"type": "number"}}}
         try:
             data = self.client.structured(self.system_prompt, user, schema)
         except LLMUnavailable as e:

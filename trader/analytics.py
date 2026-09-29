@@ -30,7 +30,7 @@ VIEW_SCHEMA = {
     "type": "object",
     "properties": {
         "regime": {"type": "string", "enum": ["up", "flat", "down"]},
-        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "confidence": {"type": "number"},
         "summary": {"type": "string"},
         "key_levels": {"type": "array", "items": {"type": "number"}},
     },
@@ -47,11 +47,11 @@ RULE_SCHEMA = {
         "desk": {"type": "string", "enum": ["", "bulls", "bears", "both"]},
         "regime": {"type": "string", "enum": ["", "up", "flat", "down"]},
         "family": {"type": "string"},
-        "hours": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 23}},
-        "cap": {"type": "number", "minimum": 0, "maximum": 1},
-        "n": {"type": "integer", "minimum": 0, "maximum": 50},
-        "value": {"type": "number", "minimum": 0, "maximum": 10},
-        "minutes": {"type": "integer", "minimum": 0, "maximum": 1440},
+        "hours": {"type": "array", "items": {"type": "integer"}},
+        "cap": {"type": "number"},
+        "n": {"type": "integer"},
+        "value": {"type": "number"},
+        "minutes": {"type": "integer"},
         "rationale": {"type": "string"},
         "expected_effect": {"type": "string"},
     },
@@ -191,7 +191,7 @@ class AnalyticsDept:
             self.j.event("analytics", f"{a.name}: нейросеть недоступна ({e})", a.name, ts=ts)
             return None
         regime = data["regime"]
-        conf = float(data["confidence"])
+        conf = min(1.0, max(0.0, float(data["confidence"])))
         summary = str(data["summary"]).strip()[:400]
         self.j.add_view(ts, a.name, regime, conf, summary, price)
         self.j.event("analytics", f"{a.name}: {REGIME_RU[regime]} (уверенность {conf:.0%}). {summary}", a.name,
@@ -259,6 +259,12 @@ class AnalyticsDept:
             self.j.event("reviser", f"Ревизор: новых правил не предлагает. {d['rationale']}", None, ts=ts)
             return None
         data = {k: d[k] for k in ("type", "desk", "regime", "family", "hours", "cap", "n", "value", "minutes")}
+        # границы значений проверяются здесь: схема ответа API числовые ограничения не принимает
+        data["hours"] = sorted({int(h) for h in (data["hours"] or []) if 0 <= int(h) <= 23})
+        data["cap"] = min(1.0, max(0.0, float(data["cap"] or 0)))
+        data["n"] = min(50, max(0, int(data["n"] or 0)))
+        data["value"] = min(10.0, max(0.0, float(data["value"] or 0)))
+        data["minutes"] = min(1440, max(0, int(data["minutes"] or 0)))
         text = describe_rule(data)
         self.j.event("reviser", f"Ревизор предлагает правило: {text}. {d['rationale']}", None, d, ts=ts)
         self.j.request_approval("rule", f"Ревизор предлагает правило: {text}",
