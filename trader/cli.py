@@ -84,6 +84,25 @@ def review(settings_port: int = 8080) -> int:
     return 0
 
 
+def report(settings_port: int = 8080) -> int:
+    """Полный отчёт для разбора из работающей компании (Markdown в stdout)."""
+    import base64
+    import sys
+    import urllib.request
+
+    pw = os.environ.get("PANEL_PASSWORD", "")
+    req = urllib.request.Request(f"http://127.0.0.1:{settings_port}/api/report.md?download=0")
+    if pw:
+        req.add_header("Authorization", "Basic " + base64.b64encode(f"x:{pw}".encode()).decode())
+    try:
+        text = urllib.request.urlopen(req, timeout=120).read().decode("utf-8")
+    except Exception as e:  # noqa: BLE001
+        print(f"Не удалось получить отчёт: {e}", file=sys.stderr)
+        return 1
+    print(text)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="trader", description="Отдел BTC-агентов на демосчёте")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -96,8 +115,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--db", default=":memory:")
     sub.add_parser("research", help="запустить отдел исследований и показать кандидатов")
     sub.add_parser("review", help="краткий обзор компании: капитал, дески, открытые позиции, сделки за сутки")
+    sub.add_parser("report", help="полный отчёт для разбора в формате Markdown (дни, дески, семейства, выходы, директор, база знаний)")
     args = p.parse_args(argv)
 
+    if args.cmd == "report":
+        return report(settings_port=int(os.environ.get("PORT", "8080")))
     if args.cmd == "review":
         return review(settings_port=int(os.environ.get("PORT", "8080")))
 

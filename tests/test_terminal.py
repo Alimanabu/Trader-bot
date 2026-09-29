@@ -184,3 +184,22 @@ def test_macro_describe():
     from trader.data.macro import describe
     assert "недоступны" in describe(None)
     assert "страх" in describe({"fng": 20, "fng_label": "крайний страх", "open_interest": 90000.0, "oi_change_pct": 1.5})
+
+
+def test_full_report_markdown(settings):
+    from tests.test_engine import hours
+    from trader.report import build_report, exit_kind
+    eng, market, T = _fresh(settings, interns=3)
+    hours(eng, market, 30)
+    text = build_report(eng)
+    for title in ("## 1. Главное", "## 2. По дням", "## 3. Дески", "## 4. Семейства", "## 5. Круги сделок", "## 6. Итог закрытых сделок по часам",
+                  "## 7. Команда сейчас", "## 8. События", "## 9. Директор", "## 10. База знаний", "## 12. Открытые позиции", "## 13. Ключевые настройки"):
+        assert title in text
+    assert "inf" not in text.lower().replace("info", "")
+    assert exit_kind("стоп-лосс 79 800") == "стоп-лосс" and exit_kind("подтянутый стоп сработал") == "подтянутый стоп"
+    assert exit_kind("RSI вышел из зоны") == "сигнал стратегии"
+    from fastapi.testclient import TestClient
+    from trader.api import create_app
+    c = TestClient(create_app(engine=eng, start_scheduler=False))
+    r = c.get("/api/report.md")
+    assert r.status_code == 200 and "attachment" in r.headers.get("content-disposition", "") and "# Botz" in r.text

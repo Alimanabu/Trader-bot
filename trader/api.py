@@ -132,6 +132,15 @@ def create_app(engine: Engine | None = None, start_scheduler: bool = True) -> Fa
         return {"analysts": engine.analytics.stats(), "views": engine.j.recent_views(None, 40),
                 "consensus": engine.analytics.consensus(int(__import__("time").time()))}
 
+    @app.get("/api/report.md")
+    def report_md(download: int = 1):
+        from .report import build_report
+        import time as _time
+        text = build_report(engine)
+        name = "botz-report-" + _time.strftime("%Y-%m-%d-%H%M", _time.gmtime()) + ".md"
+        headers = {"Content-Disposition": f'attachment; filename="{name}"'} if download else {}
+        return Response(text, media_type="text/markdown; charset=utf-8", headers=headers)
+
     @app.get("/api/signals")
     def signals_list():
         return engine.signals.state(engine.agents, engine.last_price, int(__import__("time").time()))

@@ -579,6 +579,7 @@
     const daily = [...sm.daily].reverse().map((d) => `<tr><td>${d.day.slice(5).split("-").reverse().join(".")}</td><td class="r num">${fmt(d.equity)} $</td><td class="r num ${cls(d.change)}">${d.change == null ? "—" : sign(d.change) + " $"}</td></tr>`).join("");
     const reports = sm.reports.map((e) => { let data = {}; try { data = JSON.parse(e.data || "{}"); } catch (_) {} return `<div class="report"><div class="t">${time(e.ts)}</div><div>${esc(e.message)}</div>${(data.recommendations || []).length ? `<ul>${data.recommendations.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}</div>`; }).join("");
     return `<h2 class="sec">Отчёты</h2>
+      <div class="card"><h3>Отчёт для разбора</h3><div class="note">Один файл со всем, что нужно для анализа: итоги по дням и режимам директора, дески, все семейства стратегий, как выходили из сделок и сколько держали, часы, команда и стажёры, события, директор и аналитики, база знаний, открытые позиции, настройки. Скачайте и приложите файл в чат с Claude.</div><p style="display:flex;gap:8px;flex-wrap:wrap"><a class="btn primary" href="/api/report.md" download>Скачать отчёт</a><a class="btn" href="/api/report.md?download=0" target="_blank">Открыть в браузере</a></p></div>
       ${approvalsHTML(s)}
       ${heatmapHTML(s)}
       <div class="card"><h3>Сегодня</h3><div class="stat">
